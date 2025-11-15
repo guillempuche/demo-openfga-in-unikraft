@@ -1,0 +1,30 @@
+{
+	"editor.formatOnSave": true,
+	"terminal.integrated.defaultProfile.linux": "Nix (auto)",
+	"terminal.integrated.defaultProfile.osx": "Nix (auto zsh)",
+	"terminal.integrated.profiles.linux": {
+		"Nix (auto)": {
+			"path": "bash",
+			"args": [
+				"-lc",
+				"if command -v nix >/dev/null 2>&1 && [ -f flake.nix ]; then nix develop -c \"${SHELL:-bash}\" || exec \"${SHELL:-bash}\"; else exec \"${SHELL:-bash}\"; fi"
+			]
+		}
+	},
+	"terminal.integrated.profiles.osx": {
+		"Nix (auto bash)": {
+			"path": "bash",
+			"args": [
+				"-lc",
+				"if command -v nix >/dev/null 2>&1 && [ -f flake.nix ]; then nix develop -c \"${SHELL:-bash}\" || exec \"${SHELL:-bash}\"; else exec \"${SHELL:-bash}\"; fi"
+			]
+		},
+		"Nix (auto zsh)": {
+			"path": "zsh",
+			"args": [
+				"-lc",
+				"if command -v nix >/dev/null 2>&1 && [ -f flake.nix ]; then nix develop -c \"${SHELL:-zsh}\" || exec \"${SHELL:-zsh}\"; else exec \"${SHELL:-zsh}\"; fi"
+			]
+		}
+	},
+}

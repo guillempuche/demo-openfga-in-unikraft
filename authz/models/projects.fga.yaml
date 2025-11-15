@@ -1,0 +1,76 @@
+name: Projects Module Tests
+
+model_file: ./fga.mod
+
+tuples:
+  # Project membership
+  - user: user:alice
+    relation: owner
+    object: project:roadmap
+
+  - user: user:bob
+    relation: contributor
+    object: project:roadmap
+
+  - user: user:carol
+    relation: viewer
+    object: project:roadmap
+
+  # List belongs to project
+  - user: project:roadmap
+    relation: project
+    object: list:backlog
+
+  # List-specific overrides
+  - user: user:erin
+    relation: collaborator
+    object: list:backlog
+
+tests:
+  - name: Project owner full control
+    check:
+      - user: user:alice
+        object: project:roadmap
+        assertions:
+          owner: true
+          can_manage: true
+          can_edit: true
+          can_share: true
+
+  - name: Contributor inherits list access
+    check:
+      - user: user:bob
+        object: list:backlog
+        assertions:
+          can_edit: true
+          can_view: true
+          can_share: true
+
+  - name: Viewer cascades read-only permissions
+    check:
+      - user: user:carol
+        object: list:backlog
+        assertions:
+          can_view: true
+          can_edit: false
+
+  - name: List collaborator without project membership
+    check:
+      - user: user:erin
+        object: list:backlog
+        assertions:
+          can_edit: true
+          can_view: true
+          can_share: true
+      - user: user:erin
+        object: project:roadmap
+        assertions:
+          can_view: false
+
+  - name: Non member cannot access project
+    check:
+      - user: user:dave
+        object: project:roadmap
+        assertions:
+          can_view: false
+          can_edit: false

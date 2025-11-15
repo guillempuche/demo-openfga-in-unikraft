@@ -1,0 +1,82 @@
+name: Tasks Module Tests
+
+model_file: ./fga.mod
+
+tuples:
+  # Project + list relationships
+  - user: user:alice
+    relation: owner
+    object: project:roadmap
+
+  - user: user:frank
+    relation: contributor
+    object: project:roadmap
+
+  - user: project:roadmap
+    relation: project
+    object: list:backlog
+
+  # Task links to list
+  - user: list:backlog
+    relation: list
+    object: task:spec
+
+  # Task roles
+  - user: user:alice
+    relation: owner
+    object: task:spec
+
+  - user: user:bob
+    relation: assignee
+    object: task:spec
+
+  - user: user:carol
+    relation: follower
+    object: task:spec
+
+tests:
+  - name: Task owner full control
+    check:
+      - user: user:alice
+        object: task:spec
+        assertions:
+          can_view: true
+          can_edit: true
+          can_complete: true
+          can_comment: true
+
+  - name: Project contributor inherits edit via list
+    check:
+      - user: user:frank
+        object: task:spec
+        assertions:
+          can_view: true
+          can_edit: true
+          can_complete: false
+          can_comment: true
+
+  - name: Assignee can complete task
+    check:
+      - user: user:bob
+        object: task:spec
+        assertions:
+          can_complete: true
+          can_edit: true
+
+  - name: Follower read/comment only
+    check:
+      - user: user:carol
+        object: task:spec
+        assertions:
+          can_view: true
+          can_comment: true
+          can_edit: false
+          can_complete: false
+
+  - name: Unrelated user denied
+    check:
+      - user: user:dave
+        object: task:spec
+        assertions:
+          can_view: false
+          can_edit: false

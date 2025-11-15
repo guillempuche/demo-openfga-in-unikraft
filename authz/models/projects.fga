@@ -1,0 +1,25 @@
+module projects
+
+type user
+
+type project
+  relations
+    define owner: [user]
+    define contributor: [user]
+    define viewer: [user]
+    define member: owner or contributor or viewer
+    define can_manage: owner
+    define can_edit: owner or contributor
+    define can_view: member
+    define can_share: owner or contributor
+
+type list
+  relations
+    define project: [project]
+    define owner: [user]
+    define collaborator: [user]
+    define viewer: [user]
+    define member: owner or collaborator or viewer or member from project
+    define can_edit: owner or collaborator or can_edit from project
+    define can_view: member or can_view from project
+    define can_share: owner or collaborator or can_share from project

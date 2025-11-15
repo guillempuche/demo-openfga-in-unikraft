@@ -1,0 +1,13 @@
+module tasks
+
+type task
+  relations
+    define list: [list]
+    define owner: [user]
+    define assignee: [user]
+    define follower: [user]
+
+    define can_view: owner or assignee or follower or can_view from list
+    define can_edit: owner or assignee or can_edit from list
+    define can_complete: owner or assignee
+    define can_comment: owner or assignee or follower or can_edit from list
