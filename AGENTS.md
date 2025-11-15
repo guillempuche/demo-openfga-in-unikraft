@@ -1,0 +1,109 @@
+# AI Agent Context
+
+This document provides context for AI coding assistants working on this project.
+
+## Project Overview
+
+Demo project showcasing OpenFGA authorization system with plans to integrate Unikraft unikernels. Currently implements a modular ReBAC (Relationship-Based Access Control) system for managing permissions across projects, lists, and tasks.
+
+## Tech Stack
+
+- **Authorization**: OpenFGA v1.11.0 (FGA DSL models)
+- **Database**: PostgreSQL 17.2
+- **Infrastructure**: Docker Compose
+- **Dev Environment**: Nix Flakes (reproducible tooling)
+- **Future**: Unikraft integration (planned)
+
+## Architecture
+
+### Authorization Models
+
+Located in `authz/models/`:
+
+- `fga.mod`: Manifest declaring included modules
+- `projects.fga`: Project-level permissions (owner, contributor, viewer)
+- `tasks.fga`: Task-level permissions with list inheritance
+
+Permission flow: `project → list → task` (hierarchical inheritance)
+
+### Key Concepts
+
+- **ReBAC**: Relationship-based checks (`user:alice` has relation `owner` with `project:roadmap`)
+- **Modular models**: Separate bounded contexts that reference each other
+- **Cascading permissions**: Child resources inherit parent permissions via `from` clauses
+
+## Development Workflow
+
+### Environment Setup
+
+```bash
+nix develop          # Enter dev shell
+cd authz
+docker compose up -d # Start OpenFGA + PostgreSQL
+```
+
+### Common Tasks
+
+**Deploy authorization model:**
+```bash
+fga model write \
+  --store-id=01JKBYH927ZKTK9N0SJWWAAXC0 \
+  --api-url=https://localhost:4080 \
+  --api-token=dev-key-1 \
+  --file authz/models/fga.mod
+```
+
+**Run tests:**
+```bash
+fga model test --tests authz/models/projects.fga.yaml authz/models/tasks.fga.yaml
+```
+
+**Check permissions:**
+```bash
+fga query check user:alice can_edit project:roadmap
+```
+
+## File Structure
+
+```
+.
+├── authz/
+│   ├── docker-compose.yaml      # OpenFGA + PostgreSQL stack
+│   ├── .env.example             # Environment variables template
+│   └── models/
+│       ├── fga.mod              # Model manifest
+│       ├── projects.fga         # Project authorization logic
+│       ├── projects.fga.yaml    # Project tests
+│       ├── tasks.fga            # Task authorization logic
+│       └── tasks.fga.yaml       # Task tests
+├── flake.nix                    # Nix dev environment
+├── flake.lock                   # Pinned dependencies
+└── README.md                    # User-facing documentation
+```
+
+## Important Notes
+
+- OpenFGA CLI pinned to v0.7.5 (compatibility with action-openfga-test)
+- Local server uses self-signed TLS cert (expect certificate warnings)
+- Store ID is hard-coded in `.env.example` (create via `fga store create` if needed)
+- Playground UI available at `http://localhost:4082/playground`
+
+## Testing Strategy
+
+Each `.fga` module has a corresponding `.fga.yaml` test file:
+- Define tuples (relationships)
+- Assert expected authorization outcomes
+- Cover positive and negative cases
+- Test inheritance and cascading permissions
+
+## Future Work
+
+- Integrate Unikraft unikernels for lightweight deployment
+- Performance benchmarking (OpenFGA on Unikraft vs. containers)
+- Additional authorization models for new bounded contexts
+
+## External References
+
+- [OpenFGA Documentation](https://openfga.dev/docs)
+- [Unikraft Documentation](https://unikraft.org/docs)
+- [FGA DSL Syntax](https://openfga.dev/docs/modeling/language)
