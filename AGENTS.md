@@ -4,15 +4,15 @@ This document provides context for AI coding assistants working on this project.
 
 ## Project Overview
 
-Demo project showcasing OpenFGA authorization system with plans to integrate Unikraft unikernels. Currently implements a modular ReBAC (Relationship-Based Access Control) system for managing permissions across projects, lists, and tasks.
+Demo project showcasing the OpenFGA authorization system running both in local containers and on Unikraft unikernels. Currently implements a modular ReBAC (Relationship-Based Access Control) system for managing permissions across projects, lists, and tasks, and includes the Kraftfiles and rootfs assets needed to push the same build to Unikraft Cloud.
 
 ## Tech Stack
 
 - **Authorization**: OpenFGA v1.11.0 (FGA DSL models)
 - **Database**: PostgreSQL 17.2
-- **Infrastructure**: Docker Compose
+- **Infrastructure**: Docker Compose + Unikraft Cloud (kraft cloud workloads)
 - **Dev Environment**: Nix Flakes (reproducible tooling)
-- **Future**: Unikraft integration (planned)
+- **Future**: Additional benchmarks and ReBAC modules
 
 ## Architecture
 
@@ -45,6 +45,7 @@ docker compose up -d # Start OpenFGA + PostgreSQL
 ### Common Tasks
 
 **Deploy authorization model:**
+
 ```bash
 fga model write \
   --store-id=01JKBYH927ZKTK9N0SJWWAAXC0 \
@@ -54,11 +55,13 @@ fga model write \
 ```
 
 **Run tests:**
+
 ```bash
 fga model test --tests authz/models/projects.fga.yaml authz/models/tasks.fga.yaml
 ```
 
 **Check permissions:**
+
 ```bash
 fga query check user:alice can_edit project:roadmap
 ```
@@ -91,16 +94,11 @@ fga query check user:alice can_edit project:roadmap
 ## Testing Strategy
 
 Each `.fga` module has a corresponding `.fga.yaml` test file:
+
 - Define tuples (relationships)
 - Assert expected authorization outcomes
 - Cover positive and negative cases
 - Test inheritance and cascading permissions
-
-## Future Work
-
-- Integrate Unikraft unikernels for lightweight deployment
-- Performance benchmarking (OpenFGA on Unikraft vs. containers)
-- Additional authorization models for new bounded contexts
 
 ## External References
 

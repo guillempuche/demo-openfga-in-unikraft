@@ -1,0 +1,27 @@
+FROM --platform=linux/x86_64 golang:1.21.3-bookworm AS build
+
+ARG OPENFGA_VERSION=v1.11.0
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone --depth=1 --branch ${OPENFGA_VERSION} https://github.com/openfga/openfga.git
+WORKDIR /src/openfga
+
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -xe; \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build \
+      -buildmode=pie \
+      -ldflags "-linkmode external -extldflags -static-pie" \
+      -tags netgo \
+      -o /usr/bin/openfga ./cmd/run
+
+FROM scratch
+
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /usr/bin/openfga /usr/bin/openfga
+COPY infrastructure/kraftcloud/openfga/rootfs/ /
