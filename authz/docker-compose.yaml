@@ -37,44 +37,48 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    image: openfga/openfga:v1.11.0 # More version at https://hub.docker.com/r/openfga/openfga/tags
+    image: openfga/openfga:v1.11.0
     environment: # Full list https://github.com/openfga/openfga/blob/main/cmd/run/flags.go, https://github.com/openfga/openfga/blob/main/.config-schema.json
       - OPENFGA_ACCESS_CONTROL_STORE_ID=${OPENFGA_ACCESS_CONTROL_STORE_ID}
       - OPENFGA_AUTHN_METHOD=preshared
       - OPENFGA_AUTHN_PRESHARED_KEYS=${OPENFGA_AUTHN_PRESHARED_KEYS}
       - OPENFGA_DATASTORE_ENGINE=postgres
       - OPENFGA_DATASTORE_URI=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
-      - OPENFGA_HTTP_CORS_ALLOWED_ORIGINS=${OPENFGA_HTTP_CORS_ALLOWED_ORIGINS}
+      - OPENFGA_HTTP_CORS_ALLOWED_ORIGINS=*
       - OPENFGA_HTTP_CORS_ALLOWED_HEADERS=Content-Type,Authorization
-      - OPENFGA_HTTP_TLS_ENABLED=true
-      # - OPENFGA_HTTP_TLS_CERT=${OPENFGA_HTTP_TLS_CERT}
-      # - OPENFGA_HTTP_TLS_KEY=${OPENFGA_HTTP_TLS_KEY}
+      - OPENFGA_HTTP_TLS_ENABLED=false
       - OPENFGA_LOG_FORMAT=json
       - OPENFGA_LOG_LEVEL=debug
-      - OPENFGA_PLAYGROUND_PORT=${OPENFGA_PLAYGROUND_PORT}
+      - OPENFGA_PLAYGROUND_ENABLED=true
+      - OPENFGA_PLAYGROUND_PORT=3000
     command: run
-    volumes:
-      - ./certificates:/certs:ro
-    ports:
-      # HTTP server
-      - ${OPENFGA_HTTP_PORT}:8080
-      # # gRPC server (if used)
-      # - "${OPENFGA_GRPC_PORT}:8081"
-      # Playground (disable in prod)
-      - ${OPENFGA_PLAYGROUND_PORT}:${OPENFGA_PLAYGROUND_PORT}
     networks:
       - demo_authz_network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+
+  caddy:
+    image: caddy:2.8-alpine
+    depends_on:
+      openfga:
+        condition: service_started
+    ports:
+      - "8080:8080"  # OpenFGA API
+      - "8082:8082"  # OpenFGA Playground
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - demo_authz_network
+    restart: unless-stopped
 
 volumes:
   postgres_data:
     name: demo_authz_postgres_data
+  caddy_data:
+    name: demo_authz_caddy_data
+  caddy_config:
+    name: demo_authz_caddy_config
 
 networks:
   demo_authz_network:
-    external: true
+    name: demo_authz_network

@@ -1,0 +1,7 @@
+# Environment files
+.env
+authz/.env
+
+# Docker volumes
+authz/certificates/*.pem
+authz/certificates/*.key

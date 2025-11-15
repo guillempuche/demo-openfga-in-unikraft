@@ -1,0 +1,16 @@
+{
+	# For local development, disable automatic HTTPS
+	# In production, remove this block to enable automatic Let's Encrypt certificates
+	auto_https off
+}
+
+# OpenFGA API endpoint
+:8080 {
+	reverse_proxy openfga:8080
+	# CORS headers are injected by the OpenFGA server (see OPENFGA_HTTP_CORS_* env vars)
+}
+
+# OpenFGA Playground
+:8082 {
+	reverse_proxy openfga:3000
+}
