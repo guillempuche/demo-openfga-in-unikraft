@@ -23,16 +23,14 @@
         openfga-cli = oldPkgs.openfga-cli; # TODO: drop pin once https://github.com/openfga/action-openfga-test/issues/32 is fixed in nixpkgs.
       in
       {
-          devShells.default = pkgs.mkShell {
-         buildInputs = [
+        devShells.default = pkgs.mkShell {
+          buildInputs = [
             pkgs.git
-            pkgs.gh
-							openfga-cli # OpenFGA CLI (pinned to v0.7.5)
+            openfga-cli # OpenFGA CLI (pinned to v0.7.5)
             kraftkit
             pkgs.starship # shell beautifier
             pkgs.zsh # ensure zsh is available for nix develop -c zsh
           ];
-
 
           shellHook = ''
             echo ""
