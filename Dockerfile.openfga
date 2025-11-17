@@ -1,4 +1,5 @@
-FROM --platform=linux/x86_64 golang:1.21.3-bookworm AS build
+ARG GO_VERSION=1.24.0
+FROM --platform=linux/x86_64 golang:${GO_VERSION}-bookworm AS build
 
 ARG OPENFGA_VERSION=v1.11.0
 
