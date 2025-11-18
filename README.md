@@ -267,7 +267,8 @@ Hosting OpenFGA on Unikraft unikernels is the whole point of this project. The `
    # Capture OpenFGA IP
    kraft cloud instance ls --metro $UKC_METRO
    OPENFGA_INSTANCE=<name>
-   OPENFGA_IP=$(kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO | awk '/private ip/ {print $4; exit}')
+   OPENFGA_IP=$(kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO -o json | jq -r '.private_ip // ."private ip" // empty' 2>/dev/null || kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO | grep -i "private ip" | awk '{print $NF}' | head -1)
+   
    perl -i -pe "s/^OPENFGA_UPSTREAM_HOST=.*/OPENFGA_UPSTREAM_HOST=$OPENFGA_IP/" infrastructure/kraftcloud/.env
    set -a; . infrastructure/kraftcloud/.env; set +a
 
@@ -299,14 +300,35 @@ Use `--service` and `--rollout` to update without creating new subdomain.
    SERVICE_NAME=<name>
    ```
 
-2. Redeploy (load env first):
+2. Redeploy:
 
    ```bash
    set -a; . infrastructure/kraftcloud/.env; set +a
-   kraft cloud deploy --kraftfile infrastructure/kraftcloud/caddy/Kraftfile --service $SERVICE_NAME --rollout remove -p 443:8080/http+tls -p 8443:8082/tls -M 512M .
+   
+   kraft cloud deploy --kraftfile infrastructure/kraftcloud/caddy/Kraftfile --service $SERVICE_NAME --rollout remove -M 512M .
    ```
 
-   **Warning:** Avoid `--subdomain` on redeploy to prevent "domain exists" error.
+   **Warning:**
+   - Avoid `--subdomain` on redeploy to prevent "domain exists" error.
+   - Do not use `-p` flags with `--service` as ports are already configured for the existing service.
+
+**Troubleshooting:** If Caddy instance is in "standby" state, it likely can't reach the OpenFGA backend. Verify and update `OPENFGA_UPSTREAM_HOST`:
+
+```bash
+# Check OpenFGA instances
+kraft cloud instance ls --metro $UKC_METRO
+
+# Get current OpenFGA IP (replace <instance-name> with actual name)
+OPENFGA_INSTANCE=<instance-name>
+OPENFGA_IP=$(kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO -o json | jq -r '.private_ip // ."private ip" // empty' 2>/dev/null || kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO | grep -i "private ip" | awk '{print $NF}' | head -1)
+
+# Update .env with correct IP
+perl -i -pe "s/^OPENFGA_UPSTREAM_HOST=.*/OPENFGA_UPSTREAM_HOST=$OPENFGA_IP/" infrastructure/kraftcloud/.env
+
+# Redeploy Caddy with updated config
+set -a; . infrastructure/kraftcloud/.env; set +a
+kraft cloud deploy --kraftfile infrastructure/kraftcloud/caddy/Kraftfile --service $SERVICE_NAME --rollout remove -M 512M .
+```
 
 ### Removing Services and Instances
 
@@ -345,15 +367,21 @@ kraft cloud instance remove --stopped --metro $UKC_METRO
 
 ### Verify the Cloud Instance
 
-Export vars:
+Set the remote host using your deployment variables:
 
 ```bash
-export CADDY_REMOTE_HOST=https://<fqdn>
+# If DOMAIN is still set from deployment, use it; otherwise load from .env
+if [ -z "$DOMAIN" ]; then
+  set -a; . infrastructure/kraftcloud/.env; set +a
+  export CADDY_REMOTE_HOST=https://$OPENFGA_API_HOST
+else
+  export CADDY_REMOTE_HOST=https://$DOMAIN
+fi
 export STORE_ID=01KA43FJDTE8AQCYZ6252ZR9HS
 export FGA_API_TOKEN=dev-key-1
 ```
 
-Check:
+Verify:
 
 ```bash
 curl -i "$CADDY_REMOTE_HOST/healthz"
