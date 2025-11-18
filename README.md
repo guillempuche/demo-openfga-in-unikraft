@@ -154,7 +154,7 @@ If the UI shows "0 types" after connecting, the store simply hasn’t been seede
 
 Local auth uses a preshared key:
 
-```
+```http
 Authorization: Bearer dev-key-1
 ```
 
@@ -229,240 +229,140 @@ Hosting OpenFGA on Unikraft unikernels is the whole point of this project. The `
 
 ### Directory Layout
 
-- `infrastructure/kraftcloud/openfga/`: builds the OpenFGA v1.11.0 binary as a
-  static PIE and provides `infrastructure/kraftcloud/openfga/Kraftfile`.
-- `infrastructure/kraftcloud/caddy/`: compiles Caddy plus the templated
-  `Caddyfile` that reverse proxies to the OpenFGA service.
-- `infrastructure/kraftcloud/docker-compose.yaml`: optional helper Compose
-  stack to validate both images locally (Caddy on 8080/8082, direct OpenFGA on
-  8085/3080) prior to deploying to the cloud.
-- `Dockerfile.openfga` / `Dockerfile.caddy`: stored at the repository root per
-  the Unikraft Discord guidance (September 2025:
-  <https://discord.com/channels/1143564401060872292/1420877995245179041>),
-  ensuring `kraft cloud deploy` resolves `rootfs` paths correctly when run from
-  the monorepo root.
+- `infrastructure/kraftcloud/openfga/`: OpenFGA Kraftfile and build.
+- `infrastructure/kraftcloud/caddy/`: Caddy Kraftfile and config.
+- `infrastructure/kraftcloud/docker-compose.yaml`: Local validation stack.
+- `Dockerfile.openfga` / `Dockerfile.caddy`: Root-level Dockerfiles for kraft cloud deploy.
 
 ### Getting Started
 
-1. Choose the env template that matches your workflow and copy it to
-   `infrastructure/kraftcloud/.env`:
+1. Copy and configure `.env` (sync with `authz/.env`):
 
    ```bash
-   # Local Docker / HTTP-only validation
-   cp infrastructure/kraftcloud/.env.local.example infrastructure/kraftcloud/.env
-
-   # Or Unikraft Cloud HTTPS deployment
    cp infrastructure/kraftcloud/.env.prod.example infrastructure/kraftcloud/.env
+   # Edit for your subdomain, email, etc.
    ```
 
-   - Keep `OPENFGA_*` secrets synchronized with `authz/.env`.
-   - `.env.local.example` preserves the HTTP listeners
-     (`OPENFGA_API_HOST=:8080`, `CADDY_GLOBAL_OPTIONS="auto_https off"`) used by
-     Docker Compose or direct OpenFGA unikernel tests.
-   - `.env.prod.example` already contains TLS-ready values:
-
-     ```sh
-     OPENFGA_API_HOST=caddy-demo.fra.unikraft.app
-     OPENFGA_PLAYGROUND_HOST=caddy-demo.fra.unikraft.app
-     CADDY_GLOBAL_OPTIONS=
-     ```
-
-     Replace the hostname with your own domain (passed via
-     `--subdomain`/`--domain` or copied from `kraft cloud service ls`) and set a
-     real `CADDY_CONTACT_EMAIL` so Let’s Encrypt can issue certificates. If you
-     rely on the auto-generated name, you can leave the placeholder for the
-     first `kraft cloud deploy` of Caddy, then run `kraft cloud service ls` to
-     grab the assigned `fqdn`, update `.env`, and redeploy only the Caddy
-     workload.
-     Unikraft Cloud assigns a fresh random hostname on every `kraft cloud deploy`
-     when you omit `--domain/--subdomain`, so repeat the copy/update/redeploy
-     cycle after each Caddy rollout or pin a stable hostname from the start.
-
-2. Sign in to [console.unikraft.cloud](https://console.unikraft.cloud/), open the
-   profile **Settings** page, and copy your Unikraft Cloud API token. Export it
-   (or run `kraft cloud auth login`) before deploying so the CLI can authenticate:
+2. Export API token and metro:
 
    ```bash
-   export UKC_TOKEN=your-token-from-settings
-   export UKC_METRO=fra # List regions with `kraft cloud metro ls`
+   export UKC_TOKEN=your-token
+   export UKC_METRO=fra
    ```
 
-3. (Optional) Validate both unikernel images locally:
+3. (Optional) Validate locally:
 
    ```bash
    docker compose -f infrastructure/kraftcloud/docker-compose.yaml up --build
    ```
 
-   - `http://localhost:8080` → OpenFGA HTTP API via Caddy.
-   - `http://localhost:8082` → Playground via Caddy.
-   - `http://localhost:8085` and `http://localhost:3080` expose the raw OpenFGA
-     ports for debugging.
-   - This Compose file expects the HTTP-only values from
-     `.env.local.example`; ensure that template (or equivalent) is what you
-     copied in Step 1 before running the local stack.
-
-4. Deploy to Unikraft Cloud from the repo root:
+4. Deploy from repo root (load env first):
 
    ```bash
-   # Load variables from the .env file (portable POSIX shells: bash, zsh, dash). Check below for Windows PowerShell alternatives.
-   set -a
-   . infrastructure/kraftcloud/.env
-   set +a
+   set -a; . infrastructure/kraftcloud/.env; set +a
 
-   # Deploy the OpenFGA unikernel
-   kraft cloud deploy \
-     --kraftfile infrastructure/kraftcloud/openfga/Kraftfile \
-     -M 1G \
-     .
+   # Deploy OpenFGA
+   kraft cloud deploy --kraftfile infrastructure/kraftcloud/openfga/Kraftfile -M 1G .
 
-   # After OpenFGA is running, capture its instance name/IP and rewrite
-   # OPENFGA_UPSTREAM_HOST so Caddy can reach it. The first command lists all
-   # instances; copy the NAME for the OpenFGA workload (for example
-   # openfga-server-bn57n) into the OPENFGA_INSTANCE variable.
-   kraft cloud instance ls --metro ${UKC_METRO:-fra}
-   OPENFGA_INSTANCE=<openfga-instance-name>
-   OPENFGA_IP=$(kraft cloud instance get "$OPENFGA_INSTANCE" --metro ${UKC_METRO:-fra} | awk '/private ip/ {print $4; exit}')
-   perl -0pi -e "s/^OPENFGA_UPSTREAM_HOST=.*/OPENFGA_UPSTREAM_HOST=${OPENFGA_IP}/" infrastructure/kraftcloud/.env
-   set -a
-   . infrastructure/kraftcloud/.env
-   set +a
+   # Capture OpenFGA IP
+   kraft cloud instance ls --metro $UKC_METRO
+   OPENFGA_INSTANCE=<name>
+   OPENFGA_IP=$(kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO | awk '/private ip/ {print $4; exit}')
+   perl -i -pe "s/^OPENFGA_UPSTREAM_HOST=.*/OPENFGA_UPSTREAM_HOST=$OPENFGA_IP/" infrastructure/kraftcloud/.env
+   set -a; . infrastructure/kraftcloud/.env; set +a
 
-   # Deploy the Caddy unikernel with TLS enabled and a fixed hostname.
-   # Pick a DNS-safe label (letters, numbers, hyphen) or reuse an existing one.
-   kraft cloud service ls --metro ${UKC_METRO:-fra}
+   # Initial Caddy deployment (choose subdomain)
+   # Subdomain must be DNS-safe (letters, numbers, hyphens) and unique within the metro.
+   # This creates: <subdomain>.<metro>.unikraft.app (e.g., myapp.fra.unikraft.app)
    SUBDOMAIN=<your-subdomain>
-   DOMAIN=${SUBDOMAIN}.${UKC_METRO:-fra}.unikraft.app
-   perl -0pi -e "s/^OPENFGA_API_HOST=.*/OPENFGA_API_HOST=${DOMAIN}/" infrastructure/kraftcloud/.env
-   perl -0pi -e "s/^OPENFGA_PLAYGROUND_HOST=.*/OPENFGA_PLAYGROUND_HOST=${DOMAIN}/" infrastructure/kraftcloud/.env
-   set -a
-   . infrastructure/kraftcloud/.env
-   set +a
-
-   kraft cloud deploy \
-     --kraftfile infrastructure/kraftcloud/caddy/Kraftfile \
-     --subdomain ${SUBDOMAIN} \
-     -p 443:8080/http+tls \
-     -p 8443:8082/tls \
-     -M 512M \
-     .
+   DOMAIN=$SUBDOMAIN.$UKC_METRO.unikraft.app
+   perl -i -pe "s/^OPENFGA_API_HOST=.*/OPENFGA_API_HOST=$DOMAIN/" infrastructure/kraftcloud/.env # It will replace the old domain with the new domain
+   perl -i -pe "s/^OPENFGA_PLAYGROUND_HOST=.*/OPENFGA_PLAYGROUND_HOST=$DOMAIN/" infrastructure/kraftcloud/.env # It will replace the old domain with the new domain
+   set -a; . infrastructure/kraftcloud/.env; set +a
+   kraft cloud deploy --kraftfile infrastructure/kraftcloud/caddy/Kraftfile --subdomain $SUBDOMAIN -p 443:8080/http+tls -p 8443:8082/tls -M 512M .
    ```
+
+   **Note:**
+   - Deploy OpenFGA first. Run from repo root.
+   - `--subdomain` creates a subdomain under `*.unikraft.app`. For custom domains you own, use `-d <your-domain.com>` instead.
+   - Subdomain must be unique within the metro (deployment fails if already taken).
+   - For auto-generated hostname: Update .env with generated FQDN and redeploy (see below).
+
+### Redeploying to an Existing Service
+
+Use `--service` and `--rollout` to update without creating new subdomain.
+
+1. Get service name:
 
    ```bash
-   # If you skip --domain/--subdomain, sync the generated hostname into .env and
-   # redeploy Caddy so the reverse proxy listens on the correct host.
-   SERVICE=<service-name-from-kraft-output>
-   AUTO_HOST=$(kraft cloud service get "$SERVICE" --metro ${UKC_METRO:-fra} | awk '/domain:/ {print $2}' | head -n1 | sed 's#https://##')
-   perl -0pi -e "s/^OPENFGA_API_HOST=.*/OPENFGA_API_HOST=${AUTO_HOST}/" infrastructure/kraftcloud/.env
-   perl -0pi -e "s/^OPENFGA_PLAYGROUND_HOST=.*/OPENFGA_PLAYGROUND_HOST=${AUTO_HOST}/" infrastructure/kraftcloud/.env
-   set -a
-   . infrastructure/kraftcloud/.env
-   set +a
-   kraft cloud deploy \
-     --kraftfile infrastructure/kraftcloud/caddy/Kraftfile \
-     -p 443:8080/http+tls \
-     -p 8443:8082/tls \
-     -M 512M \
-     .
+   kraft cloud service ls --metro $UKC_METRO
+   SERVICE_NAME=<name>
    ```
 
-   Deploy the OpenFGA unikernel before Caddy so the reverse proxy has a live
-   upstream when it boots; otherwise Caddy may stay in standby waiting for the
-   backend to wake up.
+2. Redeploy (load env first):
 
-- **Important:** `rootfs` paths in Kraftfiles are resolved relative to the
-    current working directory, so always run `kraft cloud deploy … .` from the
-    monorepo root (same directory you would run `git status`). This follows the
-    Unikraft Discord recommendation from September 2025
-    (<https://discord.com/channels/1143564401060872292/1420877995245179041>):
-    keep the Dockerfiles (`Dockerfile.openfga`, `Dockerfile.caddy`) at the repo
-     root and invoke `kraft` from that same directory so paths resolve cleanly.
-- To inject many env vars, either export them beforehand (e.g. `set -a; .
-     infrastructure/kraftcloud/.env; set +a` in POSIX-compatible shells such as
-     bash/zsh) or pass multiple `-e KEY=value` arguments. Shells without POSIX
-     `.` semantics:
-  - **fish:** `env (cat infrastructure/kraftcloud/.env | xargs) kraft cloud deploy …`
-  - **PowerShell (Windows):**
+   ```bash
+   set -a; . infrastructure/kraftcloud/.env; set +a
+   kraft cloud deploy --kraftfile infrastructure/kraftcloud/caddy/Kraftfile --service $SERVICE_NAME --rollout remove -p 443:8080/http+tls -p 8443:8082/tls -M 512M .
+   ```
 
-       ```powershell
-       Get-Content infrastructure/kraftcloud/.env |
-         Where-Object { $_ -and -not $_.StartsWith('#') } |
-         ForEach-Object {
-           $name, $value = $_.Split('=', 2)
-           [System.Environment]::SetEnvironmentVariable($name, $value, 'Process')
-         }
+   **Warning:** Avoid `--subdomain` on redeploy to prevent "domain exists" error.
 
-       kraft cloud deploy --kraftfile infrastructure/kraftcloud/openfga/Kraftfile -M 1G .
-       ```
+### Removing Services and Instances
 
-     Alternatively, run `bash -lc "set -a; . infrastructure/kraftcloud/.env; set +a; kraft cloud deploy …"`
-     or export the needed variables manually. If you prefer `.env` semantics,
-     consider `kraft cloud compose up --env-file …` instead.
+**List services and instances:**
+
+```bash
+kraft cloud service ls --metro $UKC_METRO
+kraft cloud instance ls --metro $UKC_METRO
+```
+
+**Remove a specific service:**
+
+```bash
+kraft cloud service remove <service-name-or-uuid> --metro $UKC_METRO
+```
+
+**Remove a specific instance:**
+
+```bash
+kraft cloud instance remove <instance-name-or-uuid> --metro $UKC_METRO
+```
+
+**Remove all instances:**
+
+```bash
+kraft cloud instance remove --all --metro $UKC_METRO
+```
+
+**Remove only stopped instances:**
+
+```bash
+kraft cloud instance remove --stopped --metro $UKC_METRO
+```
+
+**Note:** Removing a service also removes its associated instances. Remove Caddy service first if you want to keep OpenFGA instances running.
 
 ### Verify the Cloud Instance
 
-After both unikernel workloads are up, you can hit the same OpenFGA HTTP API
-that Caddy exposes on your public hostname. Export the values that match your
-deployment:
+Export vars:
 
-```sh
-# List services
-kraft cloud service ls --metro ${UKC_METRO:-fra}
-
-# or inspect a specific service to grab the provisioned URL (replace name)
-kraft cloud service get <service-name> --metro ${UKC_METRO:-fra}
-
-export CADDY_REMOTE_HOST=https://<fqdn>  # Hostname serving OpenFGA via Caddy
-export STORE_ID=01KA43FJDTE8AQCYZ6252ZR9HS             # or your custom store
-export FGA_API_TOKEN=dev-key-1                         # preshared key
+```bash
+export CADDY_REMOTE_HOST=https://<fqdn>
+export STORE_ID=01KA43FJDTE8AQCYZ6252ZR9HS
+export FGA_API_TOKEN=dev-key-1
 ```
 
-Now use `curl` to confirm the remote server is alive and that the API accepts
-authorized requests:
+Check:
 
-```sh
-# Basic liveness probe (HTTP 200 means the Caddy/OpenFGA stack is reachable)
+```bash
 curl -i "$CADDY_REMOTE_HOST/healthz"
-
-# Run an authorization check against the deployed store
-curl -s "$CADDY_REMOTE_HOST/stores/$STORE_ID/check" \
-  -H "Authorization: Bearer $FGA_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-        "tuple_key": {
-          "user": "user:alice",
-          "relation": "viewer",
-          "object": "project:roadmap"
-        }
-      }' | jq
+curl -s "$CADDY_REMOTE_HOST/stores/$STORE_ID/check" -H "Authorization: Bearer $FGA_API_TOKEN" -H "Content-Type: application/json" -d '{"tuple_key": {"user": "user:alice", "relation": "viewer", "object": "project:roadmap"}}' | jq
 ```
-
-If you bypass Caddy and connect straight to the OpenFGA unikernel, update
-`CADDY_REMOTE_HOST` to match the raw IP/port exposed by `kraft cloud deploy`
-(for example `http://<instance-ip>:8080`). Non-200 responses usually indicate
-missing environment variables or that the unikernel instances have been scaled
-down—rerun `kraft cloud instance logs …` to inspect failures.
-
-### Files of Interest
-
-- `infrastructure/kraftcloud/.env.local.example` /
-  `infrastructure/kraftcloud/.env.prod.example`: canonicalize OpenFGA datastore
-  URIs, store IDs, preshared keys, and Caddy knobs for local Docker runs and
-  Unikraft Cloud TLS deployments, respectively.
-- `Dockerfile.openfga` / `Dockerfile.caddy`: update the version args here when
-  tracking newer OpenFGA or Caddy releases. Both files live at the repo root so
-  `kraft cloud deploy` can package them without path gymnastics.
-- `infrastructure/kraftcloud/caddy/rootfs/etc/caddy/Caddyfile`: templated via
-  environment variables so you can keep local HTTP-only and production TLS
-  configs in sync.
 
 ### Relationship to `authz/docker-compose.yaml`
 
-- `authz/docker-compose.yaml` is still the canonical local developer stack
-  (PostgreSQL + OpenFGA + Caddy) and drives the examples earlier in this README.
-- The Unikraft artifacts reuse the same environment variables, letting you swap
-  between local Docker and Unikraft Cloud without rewriting CLI commands.
-- Whenever you tweak HTTP ports, datastore URIs, or Caddy directives, update
-  both stacks so docs, Playgrounds, and scripts stay aligned.
+Reuses same env vars for consistency between local and cloud.
 
 ## Reference
 
