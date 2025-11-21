@@ -5,15 +5,10 @@ OpenFGA is one of the most widely adopted relationship-based authorization servi
 ## Table of Contents
 
 - [Overview](#overview)
-- [Development Environment](#development-environment)
-  - [Prerequisites](#prerequisites)
-  - [Nix Dev Shell](#nix-dev-shell)
+- [Directory Layout](#directory-layout)
+- [Prerequisites](#prerequisites)
+- [Local Smoke Test](#local-smoke-test)
 - [OpenFGA Local Setup](#openfga-local-setup)
-  - [Quick Start](#quick-start)
-  - [Runtime Endpoints](#runtime-endpoints)
-  - [Using the Playground](#using-the-playground)
-  - [Authentication](#authentication)
-  - [Additional Resources](#additional-resources)
 - [Authorization Models](#authorization-models)
   - [Deploy the Manifest](#deploy-the-manifest)
   - [Inspect the Combined Model](#inspect-the-combined-model)
@@ -21,55 +16,68 @@ OpenFGA is one of the most widely adopted relationship-based authorization servi
   - [Transform Models](#transform-models)
   - [Add a New Model](#add-a-new-model)
 - [Unikraft Cloud Deployment](#unikraft-cloud-deployment)
-  - [Directory Layout](#directory-layout)
-  - [Getting Started](#getting-started)
-  - [Files of Interest](#files-of-interest)
-  - [Relationship to `authz/docker-compose.yaml`](#relationship-to-authzdocker-composeyaml)
+  - [Prepare the Environment](#prepare-the-environment)
+  - [Deploy OpenFGA](#deploy-openfga)
+  - [Deploy Caddy](#deploy-caddy)
+  - [Inspect & Troubleshoot](#inspect--troubleshoot)
+  - [Clean Up](#clean-up)
 - [Reference](#reference)
 
 ## Overview
 
-- Reproducible tooling powered by `flake.nix`, pinning OpenFGA CLI, KraftKit, and supporting utilities that you need to target a unikernel runtime.
-- Local OpenFGA stack (PostgreSQL + OpenFGA + Caddy) that mirrors the same configuration you deploy to Unikraft Cloud unikernels, so debugging never diverges.
-- Modular authorization models, tests, and walkthroughs that highlight why OpenFGA remains a popular choice for ReBAC, plus how to ship those models on next-gen infrastructure.
+- **Reproducible tooling** powered by `flake.nix`, pinning OpenFGA CLI, KraftKit, and supporting utilities.
+- **Local OpenFGA stack** (PostgreSQL + OpenFGA + Caddy) that mirrors the configuration deployed to Unikraft Cloud.
+- **Modular authorization models**, tests, and walkthroughs that highlight why OpenFGA remains a popular choice for ReBAC.
 
-## Development Environment
+## Directory Layout
 
-Use this workflow whenever you need to tweak OpenFGA before packaging it for a Unikraft unikernel. The same tools that publish to kraft cloud are available here so every change can be validated on your laptop first.
+- `authz/` – Local development stack (Docker Compose) and authorization models.
+- `authz/models/` – FGA modules (`projects.fga`, `tasks.fga`) and tests.
+- `infrastructure/kraftcloud/` – Kraft Cloud deployment assets.
+  - `openfga/` – OpenFGA Kraftfile and rootfs.
+  - `caddy/` – Caddy Kraftfile and config.
+  - `docker-compose.yaml` – Local validation stack matching the unikernels.
+- `Dockerfile.openfga` – Build definition for the OpenFGA unikernel.
+- `Dockerfile.caddy` – Build definition for the Caddy unikernel.
 
-### Prerequisites
+## Prerequisites
 
-- **Docker**: Required for running the local OpenFGA stack via Docker Compose.
-  - [Install Docker Desktop](https://docs.docker.com/get-docker/) (includes Docker Compose)
-  - Verify installation: `docker --version && docker compose version`
+### Tooling
 
-### Nix Dev Shell
+1. **Docker**: Required for running the local stacks via Docker Compose.
+   - Verify: `docker --version && docker compose version`
 
-Everything else you need runs from the Nix dev shell declared at the repo root.
+2. **Nix**: (Recommended) Enter the dev shell for consistent tooling.
+   - Install [Nix](https://zero-to-nix.com/start/install/).
+   - Run: `nix develop` (or `nix develop -c zsh`).
 
-#### Linux & macOS
+### Cloud Auth
 
-1. **Install Nix**
-   - **Recommended:** [Determinate Systems Nix Installer](https://zero-to-nix.com/start/install/) – single command, works on Linux/macOS/WSL.
-   - **Alternative:** [Official NixOS installer](https://nixos.org/download.html).
-   - Nix keeps `openfga-cli`, and `kraftkit` in lockstep across the team.
-2. **Enter the dev shell**
+Export your Unikraft Cloud token and target metro before deploying:
 
-   ```bash
-   nix develop # or for zsh shell: nix develop -c zsh
-   ```
+```bash
+export UKC_TOKEN="<your-kraftcloud-token>"
+export UKC_METRO=fra
+```
 
-   The shell hook prints the OpenFGA CLI version so you can confirm the tooling.
+## Local Smoke Test
 
-#### Windows
+Use Docker Compose to confirm the build boots with your `.env` configuration. This uses the same Dockerfiles as the cloud deployment.
 
-- Follow the [official Unikraft WSL2 instructions](https://unikraft.org/docs/cli/install#windows) to set up KraftKit prerequisites.
-- Inside your WSL distribution, install Nix using one of the methods above and run `nix develop`.
-- For OpenFGA specifics on Windows/WSL, see the [OpenFGA CLI guide](https://openfga.dev/docs/getting-started/cli).
+```bash
+cp infrastructure/kraftcloud/.env.prod.example infrastructure/kraftcloud/.env
+
+docker compose \
+  -f infrastructure/kraftcloud/docker-compose.yaml \
+  --env-file infrastructure/kraftcloud/.env \
+  up --build
+```
+
+Ensure you have a PostgreSQL instance running (e.g., from the `authz/docker-compose.yaml` stack) and configured in `.env` if testing full functionality.
 
 ## OpenFGA Local Setup
 
-This is the reference deployment you can run in containers to prove out model changes, CLI flows, and datastore migrations before shipping the same OpenFGA bits inside a Unikraft unikernel.
+This is the reference deployment for **development**. It uses standard container images to prove out model changes and CLI flows.
 
 ### Quick Start
 
@@ -79,29 +87,16 @@ This is the reference deployment you can run in containers to prove out model ch
    cp authz/.env.example authz/.env
    ```
 
-   The default values are configured for local development and can be used as-is.
-
-2. **Start the local OpenFGA stack** (PostgreSQL + OpenFGA server):
+2. **Start the stack**:
 
    ```bash
    docker compose -f authz/docker-compose.yaml up -d
    ```
 
-   This starts:
-   - PostgreSQL database on port 5435
-   - OpenFGA server (internal)
-   - Caddy reverse proxy exposing:
-     - OpenFGA HTTP API on port 8080
-     - OpenFGA Playground UI on port 8082
+   - API: `http://localhost:8080`
+   - Playground: `http://localhost:8082/playground`
 
-3. **Verify the services are running**:
-
-   ```bash
-   docker compose -f authz/docker-compose.yaml ps
-   curl http://localhost:8080/healthz
-   ```
-
-4. **Load the demo authorization model into the store** (run from the repo root after the stack is healthy):
+3. **Load the model**:
 
    ```bash
    export STORE_ID=01KA43FJDTE8AQCYZ6252ZR9HS
@@ -115,53 +110,6 @@ This is the reference deployment you can run in containers to prove out model ch
      --file authz/models/fga.mod
    ```
 
-   The command output includes a new `authorization_model_id` (the version you just wrote). Keep using the same `STORE_ID` for future CLI calls; if the Playground reports "0 types", rerun this step.
-
-5. **Stop the stack when done**:
-
-   ```bash
-   docker compose -f authz/docker-compose.yaml down          # stop services
-   docker compose -f authz/docker-compose.yaml down -v       # stop and remove volumes
-   ```
-
-### Runtime Endpoints
-
-- Playground UI: `http://localhost:8082/playground`
-- HTTP API: `http://localhost:8080`
-
-Note: Caddy handles the reverse proxy. For production deployments, configure automatic HTTPS in the `Caddyfile`.
-
-### Using the Playground
-
-When you first open the playground, you'll see a "Create Store" popup. **The store has already been created for you** with ID `01KA43FJDTE8AQCYZ6252ZR9HS`.
-
-To connect to the existing store:
-
-1. Close the "Create Store" popup
-2. Click on the store selector (top left)
-3. Enter the store ID: `01KA43FJDTE8AQCYZ6252ZR9HS`
-
-Alternatively, if you want to create a new store:
-
-1. Enter a name (e.g., `my-demo-store`) in the popup
-2. Copy the generated store ID
-3. Update `authz/.env` with the new ID
-4. Restart the Docker Compose stack
-
-If the UI shows "0 types" after connecting, the store simply hasn’t been seeded yet—run the `fga model write …` command from the Quick Start section to deploy the demo model.
-
-### Authentication
-
-Local auth uses a preshared key:
-
-```http
-Authorization: Bearer dev-key-1
-```
-
-### Additional Resources
-
-Use the official guide at <https://openfga.dev/docs/cli> to learn more about the OpenFGA CLI workflow (stores, models, tuples, etc.).
-
 ## Authorization Models
 
 OpenFGA stays popular because its modeling experience scales, so the repo keeps the canonical modules in `authz/models/` and runs them identically on Docker and Unikraft targets.
@@ -172,7 +120,7 @@ OpenFGA stays popular because its modeling experience scales, so the repo keeps 
 
 Export the helper variables once per shell session so the CLI examples just work:
 
-```sh
+```bash
 export STORE_ID=01KA43FJDTE8AQCYZ6252ZR9HS
 export FGA_API_URL=http://localhost:8080
 export FGA_API_TOKEN=dev-key-1
@@ -180,7 +128,7 @@ export FGA_API_TOKEN=dev-key-1
 
 ### Deploy the Manifest
 
-```sh
+```bash
 fga model write \
   --store-id=$STORE_ID \
   --api-url=$FGA_API_URL \
@@ -192,7 +140,7 @@ The CLI prints the newly created `authorization_model_id`. This is the version i
 
 ### Inspect the Combined Model
 
-```sh
+```bash
 fga model get \
   --store-id=$STORE_ID \
   --api-url=$FGA_API_URL \
@@ -203,13 +151,13 @@ fga model get \
 
 Run from the repository root so the relative paths resolve correctly:
 
-```sh
+```bash
 fga model test --tests authz/models/projects.fga.yaml authz/models/tasks.fga.yaml
 ```
 
 ### Transform Models
 
-```sh
+```bash
 fga model transform \
   --input ./authz/models/projects.fga \
   --output ./authz/models/projects.json
@@ -225,174 +173,107 @@ fga model transform \
 
 ## Unikraft Cloud Deployment
 
-Hosting OpenFGA on Unikraft unikernels is the whole point of this project. The `infrastructure/kraftcloud/` tree contains the Kraftfiles, rootfs assets, and helper Compose stack that turn the popular authorization service into lightweight unikernel workloads, while keeping PostgreSQL external via the same `authz/.env` settings.
+Deploy the exact same stack to Unikraft Cloud unikernels.
 
-### Directory Layout
+### Prepare the Environment
 
-- `infrastructure/kraftcloud/openfga/`: OpenFGA Kraftfile and build.
-- `infrastructure/kraftcloud/caddy/`: Caddy Kraftfile and config.
-- `infrastructure/kraftcloud/docker-compose.yaml`: Local validation stack.
-- `Dockerfile.openfga` / `Dockerfile.caddy`: Root-level Dockerfiles for kraft cloud deploy.
-
-### Getting Started
-
-1. Copy and configure `.env` (sync with `authz/.env`):
+1. Copy the env file and configure your domain.
 
    ```bash
    cp infrastructure/kraftcloud/.env.prod.example infrastructure/kraftcloud/.env
-   # Edit for your subdomain, email, etc.
+
+   export SUBDOMAIN=iapacte-openfga # Pick a unique subdomain
+   export DOMAIN="$SUBDOMAIN.$UKC_METRO.unikraft.app"
+
+   # Update .env with your domain
+   perl -i -pe "s|^OPENFGA_API_HOST=.*|OPENFGA_API_HOST=$DOMAIN|" infrastructure/kraftcloud/.env
+   perl -i -pe "s|^OPENFGA_PLAYGROUND_HOST=.*|OPENFGA_PLAYGROUND_HOST=$DOMAIN|" infrastructure/kraftcloud/.env
    ```
 
-2. Export API token and metro:
-
-   ```bash
-   export UKC_TOKEN=your-token
-   export UKC_METRO=fra
-   ```
-
-3. (Optional) Validate locally:
-
-   ```bash
-   docker compose -f infrastructure/kraftcloud/docker-compose.yaml up --build
-   ```
-
-4. Deploy from repo root (load env first):
+2. Load the env vars whenever you deploy:
 
    ```bash
    set -a; . infrastructure/kraftcloud/.env; set +a
-
-   # Deploy OpenFGA
-   kraft cloud deploy --kraftfile infrastructure/kraftcloud/openfga/Kraftfile -M 1G .
-
-   # Capture OpenFGA IP
-   kraft cloud instance ls --metro $UKC_METRO
-   OPENFGA_INSTANCE=<name>
-   OPENFGA_IP=$(kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO -o json | jq -r '.private_ip // ."private ip" // empty' 2>/dev/null || kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO | grep -i "private ip" | awk '{print $NF}' | head -1)
-   
-   perl -i -pe "s/^OPENFGA_UPSTREAM_HOST=.*/OPENFGA_UPSTREAM_HOST=$OPENFGA_IP/" infrastructure/kraftcloud/.env
-   set -a; . infrastructure/kraftcloud/.env; set +a
-
-   # Initial Caddy deployment (choose subdomain)
-   # Subdomain must be DNS-safe (letters, numbers, hyphens) and unique within the metro.
-   # This creates: <subdomain>.<metro>.unikraft.app (e.g., myapp.fra.unikraft.app)
-   SUBDOMAIN=<your-subdomain>
-   DOMAIN=$SUBDOMAIN.$UKC_METRO.unikraft.app
-   perl -i -pe "s/^OPENFGA_API_HOST=.*/OPENFGA_API_HOST=$DOMAIN/" infrastructure/kraftcloud/.env # It will replace the old domain with the new domain
-   perl -i -pe "s/^OPENFGA_PLAYGROUND_HOST=.*/OPENFGA_PLAYGROUND_HOST=$DOMAIN/" infrastructure/kraftcloud/.env # It will replace the old domain with the new domain
-   set -a; . infrastructure/kraftcloud/.env; set +a
-   kraft cloud deploy --kraftfile infrastructure/kraftcloud/caddy/Kraftfile --subdomain $SUBDOMAIN -p 443:8080/http+tls -p 8443:8082/tls -M 512M .
    ```
 
-   **Note:**
-   - Deploy OpenFGA first. Run from repo root.
-   - `--subdomain` creates a subdomain under `*.unikraft.app`. For custom domains you own, use `-d <your-domain.com>` instead.
-   - Subdomain must be unique within the metro (deployment fails if already taken).
-   - For auto-generated hostname: Update .env with generated FQDN and redeploy (see below).
+### Deploy OpenFGA
 
-### Redeploying to an Existing Service
-
-Use `--service` and `--rollout` to update without creating new subdomain.
-
-1. Get service name:
-
-   ```bash
-   kraft cloud service ls --metro $UKC_METRO
-   SERVICE_NAME=<name>
-   ```
-
-2. Redeploy:
-
-   ```bash
-   set -a; . infrastructure/kraftcloud/.env; set +a
-   
-   kraft cloud deploy --kraftfile infrastructure/kraftcloud/caddy/Kraftfile --service $SERVICE_NAME --rollout remove -M 512M .
-   ```
-
-   **Warning:**
-   - Avoid `--subdomain` on redeploy to prevent "domain exists" error.
-   - Do not use `-p` flags with `--service` as ports are already configured for the existing service.
-
-**Troubleshooting:** If Caddy instance is in "standby" state, it likely can't reach the OpenFGA backend. Verify and update `OPENFGA_UPSTREAM_HOST`:
+Deploy the backend server first to establish the internal network.
 
 ```bash
-# Check OpenFGA instances
-kraft cloud instance ls --metro $UKC_METRO
+kraft cloud deploy \
+  --kraftfile infrastructure/kraftcloud/openfga/Kraftfile \
+  -M 1G \
+  .
+```
 
-# Get current OpenFGA IP (replace <instance-name> with actual name)
-OPENFGA_INSTANCE=<instance-name>
-OPENFGA_IP=$(kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO -o json | jq -r '.private_ip // ."private ip" // empty' 2>/dev/null || kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO | grep -i "private ip" | awk '{print $NF}' | head -1)
+**Capture the OpenFGA IP and update .env:**
 
-# Update .env with correct IP
-perl -i -pe "s/^OPENFGA_UPSTREAM_HOST=.*/OPENFGA_UPSTREAM_HOST=$OPENFGA_IP/" infrastructure/kraftcloud/.env
+```bash
+OPENFGA_INSTANCE=$(kraft cloud instance ls --metro $UKC_METRO -o json | jq -r 'sort_by(.created_at) | last | .name')
+OPENFGA_IP=$(kraft cloud instance get $OPENFGA_INSTANCE --metro $UKC_METRO -o json | jq -r '.private_ip')
 
-# Redeploy Caddy with updated config
+# Update .env
+perl -i -pe "s|^OPENFGA_UPSTREAM_HOST=.*|OPENFGA_UPSTREAM_HOST=$OPENFGA_IP|" infrastructure/kraftcloud/.env
+
+# Reload env
 set -a; . infrastructure/kraftcloud/.env; set +a
-kraft cloud deploy --kraftfile infrastructure/kraftcloud/caddy/Kraftfile --service $SERVICE_NAME --rollout remove -M 512M .
 ```
 
-### Removing Services and Instances
+### Deploy Caddy
 
-**List services and instances:**
+Deploy the reverse proxy to expose the service.
 
 ```bash
-kraft cloud service ls --metro $UKC_METRO
+kraft cloud deploy \
+  --kraftfile infrastructure/kraftcloud/caddy/Kraftfile \
+  --subdomain "$SUBDOMAIN" \
+  -p 80:443/http+redirect \
+  -p 443:8080/http+tls \
+  -p 8443:8082/tls \
+  -M 512M \
+  .
+```
+
+- `-p 80:443/http+redirect`: Redirects HTTP traffic to HTTPS.
+- `-p 443:8080/http+tls`: Exposes the OpenFGA API on the main domain (HTTPS).
+- `-p 8443:8082/tls`: Exposes the Playground on port 8443 (TLS).
+
+### Inspect & Troubleshoot
+
+- **View services**: `kraft cloud service ls --metro $UKC_METRO`
+- **Tail logs**: `kraft cloud instance logs <instance> --metro $UKC_METRO`
+- **Verify Health**:
+
+  ```bash
+  curl -i "https://$DOMAIN/healthz"
+  ```
+
+### Clean Up
+
+Remove instances and services when you are done to avoid costs.
+
+**Remove instances:**
+
+```bash
+# List instances
 kraft cloud instance ls --metro $UKC_METRO
+
+# Remove specific instance
+kraft cloud instance remove <instance-name> --metro $UKC_METRO
 ```
 
-**Remove a specific service:**
+**Remove services:**
 
 ```bash
-kraft cloud service remove <service-name-or-uuid> --metro $UKC_METRO
+# List services
+kraft cloud service ls --metro $UKC_METRO
+
+# Remove specific service
+kraft cloud service remove <service-name> --metro $UKC_METRO
 ```
-
-**Remove a specific instance:**
-
-```bash
-kraft cloud instance remove <instance-name-or-uuid> --metro $UKC_METRO
-```
-
-**Remove all instances:**
-
-```bash
-kraft cloud instance remove --all --metro $UKC_METRO
-```
-
-**Remove only stopped instances:**
-
-```bash
-kraft cloud instance remove --stopped --metro $UKC_METRO
-```
-
-**Note:** Removing a service also removes its associated instances. Remove Caddy service first if you want to keep OpenFGA instances running.
-
-### Verify the Cloud Instance
-
-Set the remote host using your deployment variables:
-
-```bash
-# If DOMAIN is still set from deployment, use it; otherwise load from .env
-if [ -z "$DOMAIN" ]; then
-  set -a; . infrastructure/kraftcloud/.env; set +a
-  export CADDY_REMOTE_HOST=https://$OPENFGA_API_HOST
-else
-  export CADDY_REMOTE_HOST=https://$DOMAIN
-fi
-export STORE_ID=01KA43FJDTE8AQCYZ6252ZR9HS
-export FGA_API_TOKEN=dev-key-1
-```
-
-Verify:
-
-```bash
-curl -i "$CADDY_REMOTE_HOST/healthz"
-curl -s "$CADDY_REMOTE_HOST/stores/$STORE_ID/check" -H "Authorization: Bearer $FGA_API_TOKEN" -H "Content-Type: application/json" -d '{"tuple_key": {"user": "user:alice", "relation": "viewer", "object": "project:roadmap"}}' | jq
-```
-
-### Relationship to `authz/docker-compose.yaml`
-
-Reuses same env vars for consistency between local and cloud.
 
 ## Reference
 
-- Unikraft CLI install guide: <https://unikraft.org/docs/cli/install>
-- OpenFGA CLI docs: <https://openfga.dev/docs/getting-started/cli>
+- [Unikraft CLI install guide](https://unikraft.org/docs/cli/install)
+- [OpenFGA CLI docs](https://openfga.dev/docs/getting-started/cli)
