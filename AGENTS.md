@@ -66,6 +66,27 @@ fga model test --tests authz/models/projects.fga.yaml authz/models/tasks.fga.yam
 fga query check user:alice can_edit project:roadmap
 ```
 
+### Kraft CLI Commands
+
+See the [unikraft skill](.claude/skills/unikraft/SKILL.md) for full Kraft CLI reference.
+
+**Environment Setup (required for cloud commands):**
+
+```bash
+export UKC_TOKEN="your-token"   # Unikraft Cloud API token
+export UKC_METRO=fra            # Metro/region (e.g., fra, ams, lon)
+```
+
+**Quick Reference:**
+
+```bash
+kraft build                     # Build unikernels
+kraft cloud deploy              # Deploy to Unikraft Cloud
+kraft cloud compose up          # Deploy compose project
+kraft cloud instance logs       # Get instance console output
+kraft cloud service list        # List services
+```
+
 ## File Structure
 
 ```
@@ -86,10 +107,18 @@ fga query check user:alice can_edit project:roadmap
 
 ## Important Notes
 
-- OpenFGA CLI pinned to v0.7.5 (compatibility with action-openfga-test)
 - Local server uses self-signed TLS cert (expect certificate warnings)
 - Store ID is hard-coded in `.env.example` (create via `fga store create` if needed)
-- Playground UI available at `http://localhost:4082/playground`
+- Playground UI available at `http://localhost:8082/playground`
+
+## Documentation References
+
+For detailed guides, see [README.md](README.md):
+
+- [Local Setup](README.md#openfga-local-setup) – Docker Compose stack for development
+- [Authorization Models](README.md#authorization-models) – Deploy, inspect, test, and extend FGA models
+- [Unikraft Cloud Deployment](README.md#unikraft-cloud-deployment) – Deploy to Unikraft unikernels
+- [Local Smoke Test](README.md#local-smoke-test) – Validate builds before cloud deployment
 
 ## Testing Strategy
 
