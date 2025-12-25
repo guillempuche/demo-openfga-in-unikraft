@@ -7,13 +7,22 @@ description: Kraft CLI commands for building and deploying Unikraft unikernels. 
 
 Build and deploy unikernels with the `kraft` CLI.
 
-- Documentation: https://unikraft.org/docs/cli
-- Issues & support: https://github.com/unikraft/kraftkit/issues
-- Platform: https://unikraft.cloud
+- Documentation: <https://unikraft.org/docs/cli>
+- Issues & support: <https://github.com/unikraft/kraftkit/issues>
+- Platform: <https://unikraft.cloud>
+
+## Important: Running Kraft Commands
+
+When working with kraft CLI commands:
+
+1. **Always show the commands first** - Tell the developer what commands to run before executing them
+2. **Format for copy-paste** - Display commands in a code block ready to copy-paste into the terminal
+3. **Ask before running** - Ask if the developer wants you to run the commands, as there can be authentication issues when `UKC_TOKEN` is not set in the AI's terminal session
+4. **Let developer run if needed** - If commands fail due to missing tokens, provide the commands for the developer to run manually
 
 ## Environment Setup
 
-Required for cloud commands:
+Required for cloud commands (developer must set these in their terminal):
 
 ```bash
 export UKC_TOKEN="your-token"   # Unikraft Cloud API token
@@ -198,4 +207,100 @@ kraft cloud compose ls      # List service deployments at a given path
 --no-color                  # Disable color output
 --log-level <level>         # Log level: panic, fatal, error, warn, info, debug, trace
 --help                      # Help for any command
+```
+
+## Examples Repository
+
+Reference examples: https://github.com/unikraft-cloud/examples
+
+### All Example Folders
+
+```
+bun                              # Bun JavaScript runtime
+caddy2.7-go1.21                  # Caddy web server with Go
+code-server                      # Browser-based VS Code
+database-redis7.2                # Redis in-memory store
+debian-ssh                       # SSH access environment
+dragonflydb                      # Modern Redis alternative
+duckdb-go1.21                    # DuckDB analytical database with Go
+expressjs4.18-node21             # Express.js framework
+flask-redis                      # Flask with Redis
+flask3.0-python3.12-sqlite3      # Flask with SQLite
+grafana                          # Monitoring and visualization
+haproxy                          # High availability proxy
+http-c-debug                     # C HTTP server (debug)
+http-elixir1.17                  # Elixir HTTP server
+http-java21                      # Java 21 HTTP server
+http-node25                      # Node.js 25 HTTP server
+http-perl5.42                    # Perl HTTP server
+http-python3.12-FastAPI-0.121.3  # FastAPI framework
+http-rust-1.79-axum-scale-to-zero # Rust Axum with autoscaling
+http-rust-trunkrs-leptos         # Rust Leptos full-stack
+http-rust1.91                    # Rust HTTP server
+httpserver-boost1.74-g++13.2     # C++ with Boost
+httpserver-dotnet10.0            # .NET 10.0
+httpserver-dotnet8.0             # .NET 8.0
+httpserver-elixir1.16            # Elixir 1.16
+httpserver-erlang26.2            # Erlang 26.2
+httpserver-g++13.2               # C++ with GCC
+httpserver-gcc13.2               # C with GCC
+httpserver-go1.21                # Go 1.21
+httpserver-go1.22-redis          # Go with Redis
+httpserver-java17                # Java 17
+httpserver-lua5.1                # Lua 5.1
+httpserver-nodejs21              # Node.js 21
+httpserver-perl5.38              # Perl 5.38
+httpserver-php8.2                # PHP 8.2
+httpserver-python3.12            # Python 3.12
+httpserver-python3.12-django5.0  # Django 5.0
+httpserver-python3.12-flask3.0   # Flask 3.0
+httpserver-ruby3.2               # Ruby 3.2
+httpserver-rust1.73              # Rust 1.73
+httpserver-rust1.75              # Rust 1.75
+httpserver-rust1.81-rocket0.5    # Rust Rocket framework
+httpserver-rust1.87-actix-web4   # Rust Actix-web
+hugo0.122                        # Hugo static site generator
+imaginary                        # Image processing service
+java17-spring-petclinic          # Spring Framework sample
+java17-springboot3.2.x           # Spring Boot
+mariadb                          # MariaDB database
+mariadb11.7-volumes              # MariaDB with volumes
+mcp-server-arxiv                 # MCP for arXiv
+mcp-server-simple                # Basic MCP server
+memcached1.6                     # Memcached
+minio                            # S3-compatible storage
+mongodb                          # MongoDB database
+nginx                            # Nginx web server
+nginx-flask-mongo                # Nginx + Flask + MongoDB
+nginx-vite-vanilla               # Nginx with Vite
+node-express-puppeteer           # Express with Puppeteer
+node-playwright-chromium         # Playwright (Chromium)
+node-playwright-firefox          # Playwright (Firefox)
+node-playwright-webkit           # Playwright (WebKit)
+node-vite-ssr-vanilla            # Vite SSR
+node-vite-vanilla                # Vite vanilla
+node18-agario                    # Agar.io game
+node18-wingsio                   # Wings.io game
+node21-nextjs                    # Next.js framework
+node21-remix                     # Remix framework
+node21-solid-start               # SolidJS framework
+node21-sveltekit                 # SvelteKit framework
+node21-websocket                 # WebSocket example
+node24-karaoke                   # Karaoke application
+opentelemetry-collector          # OpenTelemetry
+postgres                         # PostgreSQL database
+prisma-expressjs4.19-node18      # Prisma ORM with Express
+python-playwright-chromium       # Python Playwright
+python3.12-flask3.0-sqlite       # Flask with SQLite
+ruby3.2-rails                    # Ruby on Rails
+skipper0.18                      # HTTP router
+spin-wagi-http                   # WebAssembly Gateway Interface
+traefik                          # Traefik proxy
+tyk                              # API gateway
+vnc-browser                      # Browser-based VNC
+vsftpd                           # FTP server
+wazero-import-go                 # WebAssembly for Go
+webhook-github-node              # GitHub webhook handler
+wordpress-all-in-one             # WordPress single deploy
+wordpress-compose                # WordPress with Compose
 ```
