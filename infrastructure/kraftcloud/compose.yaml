@@ -1,0 +1,75 @@
+# KraftCloud Compose for OpenFGA with PostgreSQL
+#
+# Documentation:
+#   - Compose reference: https://unikraft.org/docs/cli/reference/kraft/cloud/compose
+#   - Compose up: https://unikraft.org/docs/cli/reference/kraft/cloud/compose/up
+#   - Examples: https://github.com/unikraft-cloud/examples
+#
+# Deploy from project root:
+#   kraft cloud compose --file infrastructure/kraftcloud/compose.yaml up --metro fra
+#
+# Internal networking:
+#   Services communicate via <container_name>.internal DNS
+#   Example: postgres.internal:5432
+#   See: https://github.com/unikraft-cloud/examples/tree/main/flask-redis
+#
+# Port format:
+#   Use simple EXTERNAL:INTERNAL format (e.g., 443:8080)
+#   KraftCloud adds TLS automatically for exposed ports
+#   Do NOT use /tls or /http+tls suffixes in compose files
+#
+# Migrations (required before OpenFGA can start):
+#   1. Deploy postgres first: kraft cloud compose --file infrastructure/kraftcloud/compose.yaml up postgres --metro fra
+#   2. Get FQDN: kraft cloud instance get postgres --metro fra
+#   3. Run migrations:
+#      docker run --rm openfga/openfga migrate \
+#        --datastore-engine postgres \
+#        --datastore-uri "postgres://openfga:asdf1234@<postgres-fqdn>:5432/openfga?sslmode=require"
+#   4. Deploy all: kraft cloud compose --file infrastructure/kraftcloud/compose.yaml up --metro fra
+
+services:
+  # PostgreSQL database with persistent volume
+  # Accessible internally at: postgres.internal:5432
+  postgres:
+    container_name: postgres  # Required for predictable .internal DNS name
+    build: infrastructure/kraftcloud/postgres  # Path relative to project root
+    mem_reservation: 1024M
+    command: ["/usr/local/bin/wrapper.sh", "postgres", "-c", "shared_preload_libraries='pg_ukc_scaletozero'"]
+    environment:
+      - POSTGRES_USER=openfga
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-asdf1234}
+      - POSTGRES_DB=openfga
+      - PGDATA=/volume/postgres  # Store data on persistent volume
+    volumes:
+      - postgres-data:/volume  # Mount volume at /volume
+    ports:
+      - 5432:5432  # Exposed for migrations; KraftCloud adds TLS automatically
+
+  # OpenFGA authorization server
+  # Connects to PostgreSQL via internal DNS (postgres.internal)
+  openfga:
+    container_name: openfga  # Required for predictable .internal DNS name
+    build:
+      context: .  # Project root
+      dockerfile: Dockerfile.openfga
+    mem_reservation: 1024M
+    command: ["/usr/bin/openfga", "run"]
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      # Internal connection uses .internal DNS, no TLS needed (sslmode=disable)
+      - OPENFGA_DATASTORE_URI=postgres://openfga:${POSTGRES_PASSWORD:-asdf1234}@postgres.internal:5432/openfga?sslmode=disable
+      - OPENFGA_HTTP_LISTEN_ADDR=0.0.0.0
+      - OPENFGA_HTTP_LISTEN_PORT=8080
+      - OPENFGA_LOG_LEVEL=info
+      - OPENFGA_LOG_FORMAT=json
+      - OPENFGA_PLAYGROUND_ENABLED=true
+      - OPENFGA_PLAYGROUND_PORT=3000
+    ports:
+      - 443:8080  # HTTPS on 443, forwards to internal 8080
+
+# Persistent volumes
+# See: https://github.com/unikraft-cloud/examples/tree/main/nginx-flask-mongo
+volumes:
+  postgres-data:
+    driver_opts:
+      size: 512M  # 512MB for PostgreSQL data
