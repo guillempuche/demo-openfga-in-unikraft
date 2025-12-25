@@ -3,6 +3,8 @@ FROM --platform=linux/x86_64 golang:${GO_VERSION}-bookworm AS build
 
 ARG OPENFGA_VERSION=v1.11.0
 
+# Simple static build for Unikraft base-compat runtime
+# See: https://unikraft.org/docs/concepts/compatibility
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -11,15 +13,19 @@ WORKDIR /src
 RUN git clone --depth=1 --branch ${OPENFGA_VERSION} https://github.com/openfga/openfga.git
 WORKDIR /src/openfga
 
+# Build static binary using pure Go (no CGO)
+# - CGO_ENABLED=0: Pure Go, no C dependencies
+# - netgo: Use Go's net package instead of system resolver
+# - -s -w: Strip debug info for smaller binary
+# This matches OpenFGA's official build configuration
 RUN --mount=type=cache,target=/root/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     set -xe; \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build \
-      -buildmode=pie \
-      -ldflags "-linkmode external -extldflags -static-pie" \
+      -ldflags="-s -w" \
       -tags netgo \
-      -o /usr/bin/openfga ./cmd/run
+      -o /usr/bin/openfga ./cmd/openfga
 
 FROM scratch
 
