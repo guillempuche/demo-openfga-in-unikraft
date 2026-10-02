@@ -7,3 +7,5 @@ authz/certificates/*.key
 
 # Kraftcloud
 .unikraft
+# direnv
+.direnv/

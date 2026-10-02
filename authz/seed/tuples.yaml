@@ -1,0 +1,16 @@
+# Synthetic demo data (same tuples as authz/models/projects.fga.yaml).
+- user: user:alice
+  relation: owner
+  object: project:roadmap
+- user: user:bob
+  relation: contributor
+  object: project:roadmap
+- user: user:carol
+  relation: viewer
+  object: project:roadmap
+- user: project:roadmap
+  relation: project
+  object: list:backlog
+- user: user:erin
+  relation: collaborator
+  object: list:backlog
