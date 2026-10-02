@@ -1,17 +1,19 @@
-spec: v0.6
+spec: v0.7
 
 name: openfga-server
 
 runtime: base-compat:latest
 
-labels:
-  cloud.unikraft.v1.instances/scale_to_zero.policy: "on"
-  cloud.unikraft.v1.instances/scale_to_zero.stateful: "false"
-  cloud.unikraft.v1.instances/scale_to_zero.cooldown_time_ms: 1000
+targets:
+  - kraftcloud/x86_64
 
-rootfs: ./Dockerfile.openfga
+# Paths are relative to this Kraftfile. The Dockerfile lives at the repo root
+# and uses the repo root as its build context.
+rootfs:
+  source: ../../../Dockerfile.openfga
+  format: erofs
 
 cmd: ["/usr/bin/openfga", "run"]
 
-# Environment variables passed via 'kraft cloud deploy -e' flags
-# See infrastructure/kraftcloud/.env for configuration values
+# Runtime settings (memory, env, scale-to-zero, no public port) are passed to
+# `unikraft run`; see scripts/deploy.sh.

@@ -1,7 +1,10 @@
 ARG GO_VERSION=1.24.0
-FROM --platform=linux/x86_64 golang:${GO_VERSION}-bookworm AS build
+# Compile on the build host's native platform and cross-compile to the target
+# architecture; much faster than building under amd64 emulation.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS build
 
 ARG OPENFGA_VERSION=v1.11.0
+ARG TARGETARCH=amd64
 
 # Simple static build for Unikraft base-compat runtime
 # See: https://unikraft.org/docs/concepts/compatibility
@@ -21,7 +24,7 @@ WORKDIR /src/openfga
 RUN --mount=type=cache,target=/root/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     set -xe; \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build \
       -ldflags="-s -w" \
       -tags netgo \
