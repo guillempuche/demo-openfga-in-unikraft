@@ -1,5 +1,9 @@
 # PostgreSQL Deployment for OpenFGA on KraftCloud
 
+> **Historical note (2026-10):** written for the legacy `kraft cloud` CLI and a self-hosted
+> PostgreSQL unikernel. The current setup uses the `unikraft` CLI and Neon; see the
+> [README](../README.md#unikraft-cloud-deployment) and [RESULTS](RESULTS.md).
+
 ## Overview
 
 Deploy PostgreSQL on KraftCloud and configure OpenFGA to connect to it. Based on [Unikraft Cloud's official PostgreSQL example](https://github.com/unikraft-cloud/examples/tree/main/postgres).

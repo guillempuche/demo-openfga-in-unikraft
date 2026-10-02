@@ -10,7 +10,9 @@ Demo project showcasing the OpenFGA authorization system running both in local c
 
 - **Authorization**: OpenFGA v1.11.0 (FGA DSL models)
 - **Database**: PostgreSQL 17.2
-- **Infrastructure**: Docker Compose + Unikraft Cloud (kraft cloud workloads)
+- **Infrastructure**: Docker Compose (local) + Unikraft Cloud (`unikraft` CLI)
+- **Cloud datastore**: Neon Postgres (direct URL)
+- **Demo API**: Node.js 24, TypeScript via native type stripping (`api/`)
 - **Dev Environment**: Nix Flakes (reproducible tooling)
 - **Future**: Additional benchmarks and ReBAC modules
 
@@ -66,26 +68,23 @@ fga model test --tests authz/models/projects.fga.yaml authz/models/tasks.fga.yam
 fga query check user:alice can_edit project:roadmap
 ```
 
-### Kraft CLI Commands
+### Unikraft CLI Commands
 
-See the [unikraft skill](.claude/skills/unikraft/SKILL.md) for full Kraft CLI reference.
-
-**Environment Setup (required for cloud commands):**
-
-```bash
-export UKC_TOKEN="your-token"   # Unikraft Cloud API token
-export UKC_METRO=fra            # Metro/region (e.g., fra, ams, lon)
-```
+See the [unikraft skill](.claude/skills/unikraft/SKILL.md) for the CLI reference. Use the `unikraft` CLI, not the deprecated `kraft cloud`. It authenticates with a saved profile (`unikraft login`), so no `UKC_TOKEN` export is needed. Never print tokens or secrets.
 
 **Quick Reference:**
 
 ```bash
-kraft build                     # Build unikernels
-kraft cloud deploy              # Deploy to Unikraft Cloud
-kraft cloud compose up          # Deploy compose project
-kraft cloud instance logs       # Get instance console output
-kraft cloud service list        # List services
+./scripts/build.sh              # unikraft build <dir> --output <org>/<image>:latest
+./scripts/deploy.sh             # unikraft run --load <0600 yaml> (secrets stay off argv)
+./scripts/tunnel.sh             # unikraft instances tunnel 18080:fra/demo-fga-openfga:8080/tcp
+./scripts/cleanup.sh            # unikraft instances delete demo-fga-api demo-fga-openfga
+unikraft instances list
+unikraft instances get demo-fga-openfga -f name,state,networks   # -f avoids printing runtime.env
+unikraft instances logs demo-fga-openfga
 ```
+
+Only create or delete instances named `demo-fga-*`; the account hosts other workloads.
 
 ## File Structure
 
@@ -100,6 +99,12 @@ kraft cloud service list        # List services
 │       ├── projects.fga.yaml    # Project tests
 │       ├── tasks.fga            # Task authorization logic
 │       └── tasks.fga.yaml       # Task tests
+├── api/                         # Public demo API (/health, /check, /bench)
+├── infrastructure/kraftcloud/
+│   ├── openfga/Kraftfile        # OpenFGA unikernel (rootfs: Dockerfile.openfga)
+│   └── docker-compose.yaml      # Local smoke test of the unikernel Dockerfiles
+├── scripts/                     # unikraft CLI wrappers (build/deploy/tunnel/seed/test/cleanup)
+├── docs/RESULTS.md              # Unikraft Cloud test results
 ├── flake.nix                    # Nix dev environment
 ├── flake.lock                   # Pinned dependencies
 └── README.md                    # User-facing documentation
@@ -117,7 +122,7 @@ For detailed guides, see [README.md](README.md):
 
 - [Local Setup](README.md#openfga-local-setup) – Docker Compose stack for development
 - [Authorization Models](README.md#authorization-models) – Deploy, inspect, test, and extend FGA models
-- [Unikraft Cloud Deployment](README.md#unikraft-cloud-deployment) – Deploy to Unikraft unikernels
+- [Unikraft Cloud Deployment](README.md#unikraft-cloud-deployment) – Private OpenFGA + public API on Unikraft
 - [Local Smoke Test](README.md#local-smoke-test) – Validate builds before cloud deployment
 
 ## Testing Strategy
