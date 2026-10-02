@@ -70,7 +70,7 @@ fga query check user:alice can_edit project:roadmap
 
 ### Unikraft CLI Commands
 
-See the [unikraft skill](.claude/skills/unikraft/SKILL.md) for the CLI reference. Use the `unikraft` CLI, not the deprecated `kraft cloud`. It authenticates with a saved profile (`unikraft login`), so no `UKC_TOKEN` export is needed. Never print tokens or secrets.
+Use the `unikraft` skill from the Claude plugin for the CLI reference. Use the `unikraft` CLI, not the deprecated `kraft cloud`. It authenticates with a saved profile (`unikraft login`), so no `UKC_TOKEN` export is needed. Never print tokens or secrets.
 
 **Quick Reference:**
 
