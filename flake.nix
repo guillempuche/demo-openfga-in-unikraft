@@ -12,14 +12,16 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        kraftkit = unikraft-nur.packages.${system}.kraftkit;
+        unikraft-cli = unikraft-nur.packages.${system}.unikraft-cli;
       in
       {
         devShells.default = pkgs.mkShell {
           buildInputs = [
             pkgs.git
             pkgs.openfga-cli
-            kraftkit
+            unikraft-cli
+            pkgs.jq
+            pkgs.nodejs_24 # demo API (runs .ts natively)
             pkgs.starship # shell beautifier
             pkgs.zsh # ensure zsh is available for nix develop -c zsh
           ];
@@ -28,7 +30,7 @@
             echo ""
             echo "🚀 Demo Authorization with OpenFGA hosted on Unikraft"
             echo "OpenFGA $(fga --version)"
-            echo "Unikraft $(kraft version)"
+            echo "Unikraft CLI $(unikraft version 2>/dev/null | awk '/version:/{print $2}')"
             echo ""
           '';
         };
