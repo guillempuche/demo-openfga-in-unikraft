@@ -1,0 +1,42 @@
+name: Release (Go)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "pkg/go/v*"
+
+jobs:
+  test:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/pkg-go-build.yaml
+    secrets: inherit
+
+  # The release-please post-release job already created a draft GitHub release
+  # (CHANGELOG notes + auto-generated notes) when it pushed this tag. Go has no
+  # registry publish step, so once tests pass on the tag we publish (undraft) it.
+  finalize-release:
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write # publish (undraft) the github release
+    steps:
+      - name: Publish the draft GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The draft is created right after the tag is pushed; wait briefly in
+          # case this job gets there first.
+          for _ in $(seq 1 10); do
+            if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+              break
+            fi
+            echo "Waiting for draft release $TAG ..."
+            sleep 6
+          done
+          gh release edit "$TAG" --repo "$REPO" --draft=false

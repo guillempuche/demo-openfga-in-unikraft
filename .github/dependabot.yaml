@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=https://json.schemastore.org/dependabot-2.0.json
+version: 2
+
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/pkg/go"
+    schedule:
+      interval: "weekly"
+    groups:
+      dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    ignore:
+      - dependency-name: "gradle/actions/setup-gradle"
+        versions: [">= 6.0.0, < 6.1.0"]
+    groups:
+      dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directory: "/pkg/js"
+    schedule:
+      interval: "weekly"
+    ignore:
+      - dependency-name: "eslint"
+        versions: [">=10.0.0 <11.0.0"]
+    groups:
+      dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "eslint"

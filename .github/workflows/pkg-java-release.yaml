@@ -1,0 +1,123 @@
+name: Release (Java)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "pkg/java/v*"
+
+jobs:
+  test:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/pkg-java-build.yaml
+    secrets: inherit
+
+  publish-maven-central:
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: "pkg/java"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          path: "."
+          sparse-checkout: "pkg/java"
+          sparse-checkout-cone-mode: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: 11
+          distribution: "temurin"
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-provider: basic # Use the open-source basic cache provider
+
+        # Tasks created by https://github.com/gradle-nexus/publish-plugin
+      - name: Publish package
+        run: ./gradlew publishToSonatype closeAndReleaseSonatypeStagingRepository
+        env:
+          MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
+          ORG_GRADLE_PROJECT_SIGNINGKEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_SIGNINGPASSWORD: ${{ secrets.GPG_PASSPHRASE }}
+
+  publish-github-packages:
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: "pkg/java"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          path: "."
+          sparse-checkout: "pkg/java"
+          sparse-checkout-cone-mode: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: 11
+          distribution: "temurin"
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-provider: basic # Use the open-source basic cache provider
+
+      # Tasks created by https://docs.gradle.org/current/userguide/publishing_maven.html
+      - name: Publish package
+        run: ./gradlew publishAllPublicationsToGitHubPackagesRepository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG_GRADLE_PROJECT_SIGNINGKEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_SIGNINGPASSWORD: ${{ secrets.GPG_PASSPHRASE }}
+
+  # The release-please post-release job already created a draft GitHub release
+  # (CHANGELOG notes + auto-generated notes) when it pushed this tag. Publish
+  # (undraft) it only after both Maven publishes above have succeeded.
+  finalize-release:
+    runs-on: ubuntu-latest
+    needs: [publish-maven-central, publish-github-packages]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write # publish (undraft) the github release
+    steps:
+      - name: Publish the draft GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The draft is created right after the tag is pushed; wait briefly in
+          # case this job gets there first.
+          for _ in $(seq 1 10); do
+            if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+              break
+            fi
+            echo "Waiting for draft release $TAG ..."
+            sleep 6
+          done
+          gh release edit "$TAG" --repo "$REPO" --draft=false
