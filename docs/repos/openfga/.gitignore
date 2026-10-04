@@ -1,0 +1,16 @@
+bin
+.idea
+.vscode
+dist/
+.claude/
+
+openfga
+!openfga/
+
+coverage*.out
+*.swp
+
+mise.toml
+.DS_Store
+
+vendor/

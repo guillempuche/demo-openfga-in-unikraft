@@ -1,0 +1,1365 @@
+package config
+
+import (
+	"bytes"
+	"io"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/spf13/viper"
+	"github.com/stretchr/testify/require"
+)
+
+func TestVerifyConfig(t *testing.T) {
+	t.Run("UpstreamTimeout_cannot_be_less_than_ListObjectsDeadline", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDeadline = 5 * time.Minute
+		cfg.RequestTimeout = 0
+		cfg.HTTP.UpstreamTimeout = 2 * time.Second
+
+		err := cfg.Verify()
+		require.EqualError(t, err, "configured request timeout (2s) cannot be lower than 'listObjectsDeadline' config (5m0s)")
+	})
+	t.Run("UpstreamTimeout_cannot_be_less_than_ListUsersDeadline", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDeadline = 2 * time.Second
+		cfg.ListUsersDeadline = 5 * time.Minute
+		cfg.RequestTimeout = 0
+		cfg.HTTP.UpstreamTimeout = 2 * time.Second
+
+		err := cfg.Verify()
+		require.EqualError(t, err, "configured request timeout (2s) cannot be lower than 'listUsersDeadline' config (5m0s)")
+	})
+
+	t.Run("maxConcurrentReadsForListUsers_not_zero", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxConcurrentReadsForListUsers = 0
+
+		err := cfg.Verify()
+		require.EqualError(t, err, "config 'maxConcurrentReadsForListUsers' cannot be 0")
+	})
+
+	t.Run("grpc.MaxRecvMsgBytes_not_zero", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.GRPC.MaxRecvMsgBytes = 0
+
+		err := cfg.Verify()
+		require.EqualError(t, err, "config 'grpc.maxRecvMsgBytes' must be greater than 0")
+	})
+
+	t.Run("failing_to_set_http_cert_path_will_not_allow_server_to_start", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.HTTP.TLS = &TLSConfig{
+			Enabled: true,
+			KeyPath: "some/path",
+		}
+
+		err := cfg.Verify()
+		require.EqualError(t, err, "'http.tls.cert' and 'http.tls.key' configs must be set")
+	})
+
+	t.Run("failing_to_set_grpc_cert_path_will_not_allow_server_to_start", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.GRPC.TLS = &TLSConfig{
+			Enabled: true,
+			KeyPath: "some/path",
+		}
+
+		err := cfg.Verify()
+		require.EqualError(t, err, "'grpc.tls.cert' and 'grpc.tls.key' configs must be set")
+	})
+
+	t.Run("failing_to_set_http_key_path_will_not_allow_server_to_start", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.HTTP.TLS = &TLSConfig{
+			Enabled:  true,
+			CertPath: "some/path",
+		}
+
+		err := cfg.Verify()
+		require.EqualError(t, err, "'http.tls.cert' and 'http.tls.key' configs must be set")
+	})
+
+	t.Run("failing_to_set_grpc_key_path_will_not_allow_server_to_start", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.GRPC.TLS = &TLSConfig{
+			Enabled:  true,
+			CertPath: "some/path",
+		}
+
+		err := cfg.Verify()
+		require.EqualError(t, err, "'grpc.tls.cert' and 'grpc.tls.key' configs must be set")
+	})
+
+	t.Run("non_log_format", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Log.Format = "notaformat"
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("non_log_level", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Log.Level = "notalevel"
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("invalid_log_timestamp_format", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Log.TimestampFormat = "notatimestampformat"
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("empty_request_duration_datastore_query_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDatastoreQueryCountBuckets = []string{}
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("non_int_request_duration_datastore_query_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDatastoreQueryCountBuckets = []string{"12", "45a", "66"}
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("negative_request_duration_datastore_query_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDatastoreQueryCountBuckets = []string{"12", "-45", "66"}
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("empty_request_duration_dispatch_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDispatchCountBuckets = []string{}
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("non_int_request_duration_dispatch_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDispatchCountBuckets = []string{"12", "45a", "66"}
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("negative_request_duration_dispatch_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDispatchCountBuckets = []string{"12", "-45", "66"}
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("non_positive_check_dispatch_throttling_frequency", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CheckDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 0,
+			Threshold: 30,
+		}
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("non_positive_check_dispatch_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CheckDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 10 * time.Microsecond,
+			Threshold: 0,
+		}
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("non_positive_list_objects_dispatch_throttling_frequency", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 0,
+			Threshold: 30,
+		}
+
+		err := cfg.Verify()
+		require.ErrorContains(t, err, "'listObjectsDispatchThrottling.frequency' must be non-negative time duration")
+	})
+
+	t.Run("non_positive_list_users_dispatch_throttling_frequency", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListUsersDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 0,
+			Threshold: 30,
+		}
+
+		err := cfg.Verify()
+		require.ErrorContains(t, err, "'listUsersDispatchThrottling.frequency' must be non-negative time duration")
+	})
+
+	t.Run("non_positive_list_objects_dispatch_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 10 * time.Microsecond,
+			Threshold: 0,
+		}
+
+		err := cfg.Verify()
+		require.ErrorContains(t, err, "'listObjectsDispatchThrottling.threshold' must be non-negative integer")
+	})
+
+	t.Run("non_positive_list_users_dispatch_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListUsersDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 10 * time.Microsecond,
+			Threshold: 0,
+		}
+
+		err := cfg.Verify()
+		require.ErrorContains(t, err, "'listUsersDispatchThrottling.threshold' must be non-negative integer")
+	})
+
+	t.Run("dispatch_throttling_threshold_larger_than_max_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CheckDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:      true,
+			Frequency:    10 * time.Microsecond,
+			Threshold:    30,
+			MaxThreshold: 29,
+		}
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("list_objects_threshold_larger_than_max_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:      true,
+			Frequency:    10 * time.Microsecond,
+			Threshold:    30,
+			MaxThreshold: 29,
+		}
+		err := cfg.Verify()
+		require.ErrorContains(t, err, "'listObjectsDispatchThrottling.threshold' must be less than or equal to 'listObjectsDispatchThrottling.maxThreshold'")
+	})
+
+	t.Run("list_users_threshold_larger_than_max_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListUsersDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:      true,
+			Frequency:    10 * time.Microsecond,
+			Threshold:    30,
+			MaxThreshold: 29,
+		}
+		err := cfg.Verify()
+		require.ErrorContains(t, err, "'listUsersDispatchThrottling.threshold' must be less than or equal to 'listUsersDispatchThrottling.maxThreshold'")
+	})
+
+	t.Run("non_positive_check_datastore_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CheckDatastoreThrottle = DatastoreThrottleConfig{
+			Threshold: 0, // 0 means throttling is off
+			Duration:  100,
+		}
+
+		err := cfg.Verify()
+		require.NoError(t, err)
+	})
+
+	t.Run("non_positive_check_datastore_duration", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CheckDatastoreThrottle = DatastoreThrottleConfig{
+			Threshold: 100,
+			Duration:  0,
+		}
+
+		err := cfg.Verify()
+		require.ErrorContains(t, err, "'checkDatastoreThrottler.duration' must be greater than zero if threshold > 0")
+	})
+
+	t.Run("non_positive_list_objects_datastore_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDatastoreThrottle = DatastoreThrottleConfig{
+			Threshold: 0,
+			Duration:  100,
+		}
+
+		err := cfg.Verify()
+		require.NoError(t, err)
+	})
+
+	t.Run("non_positive_list_objects_datastore_duration", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDatastoreThrottle = DatastoreThrottleConfig{
+			Threshold: 100,
+			Duration:  0,
+		}
+
+		err := cfg.Verify()
+		require.ErrorContains(t, err, "'listObjectsDatastoreThrottler.duration' must be greater than zero if threshold > 0")
+	})
+
+	t.Run("non_positive_list_users_datastore_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListUsersDatastoreThrottle = DatastoreThrottleConfig{
+			Threshold: 0,
+			Duration:  100,
+		}
+
+		err := cfg.Verify()
+		require.NoError(t, err)
+	})
+
+	t.Run("non_positive_list_users_datastore_duration", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListUsersDatastoreThrottle = DatastoreThrottleConfig{
+			Threshold: 100,
+			Duration:  0,
+		}
+
+		err := cfg.Verify()
+		require.ErrorContains(t, err, "'listUsersDatastoreThrottler.duration' must be greater than zero if threshold > 0")
+	})
+
+	t.Run("negative_request_timeout_duration", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = -2 * time.Second
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("negative_shutdown_timeout_duration", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ShutdownTimeout = -2 * time.Second
+
+		err := cfg.Verify()
+		require.EqualError(t, err, "shutdownTimeout must be greater than 0")
+	})
+
+	t.Run("zero_shutdown_timeout_duration", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ShutdownTimeout = 0
+
+		err := cfg.Verify()
+		require.EqualError(t, err, "shutdownTimeout must be greater than 0")
+	})
+
+	t.Run("negative_upstream_timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 0
+		cfg.HTTP.Enabled = true
+		cfg.HTTP.UpstreamTimeout = -3 * time.Second
+		cfg.ListObjectsDeadline = -4 * time.Second
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("negative_list_objects_deadline", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 0
+		cfg.HTTP.Enabled = true
+		cfg.HTTP.UpstreamTimeout = 3 * time.Second
+		cfg.ListObjectsDeadline = -4 * time.Second
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("negative_list_users_deadline", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 0
+		cfg.HTTP.Enabled = true
+		cfg.HTTP.UpstreamTimeout = 3 * time.Second
+		cfg.ListUsersDeadline = -4 * time.Second
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("list_objects_deadline_request_timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 500 * time.Millisecond
+		cfg.ListObjectsDeadline = 4 * time.Second
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("list_users_deadline_request_timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 500 * time.Millisecond
+		cfg.ListUsersDeadline = 4 * time.Second
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+
+	t.Run("cache_query_cache", func(t *testing.T) {
+		t.Run("enable_but_ttl_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CheckQueryCache.Enabled = true
+			cfg.CheckQueryCache.TTL = 0
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+		t.Run("enable_but_ttl_negative", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CheckQueryCache.Enabled = true
+			cfg.CheckQueryCache.TTL = -2 * time.Second
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+		t.Run("enable_and_ttl_positive", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CheckQueryCache.Enabled = true
+			cfg.CheckQueryCache.TTL = 2 * time.Second
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+		t.Run("disable_and_ttl_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CheckQueryCache.Enabled = false
+			cfg.CheckQueryCache.TTL = 0
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("check_iterator_cache", func(t *testing.T) {
+		t.Run("enable_but_ttl_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CheckIteratorCache.Enabled = true
+			cfg.CheckIteratorCache.TTL = 0
+			cfg.CheckIteratorCache.MaxResults = 1000
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+
+		t.Run("enable_but_ttl_negative", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CheckIteratorCache.Enabled = true
+			cfg.CheckIteratorCache.TTL = -2 * time.Second
+			cfg.CheckIteratorCache.MaxResults = 1000
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+
+		t.Run("enable_but_max_results_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CheckIteratorCache.Enabled = true
+			cfg.CheckIteratorCache.TTL = 2 * time.Second
+			cfg.CheckIteratorCache.MaxResults = 0
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+
+		t.Run("disable_but_ttl_and_max_results_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CheckIteratorCache.Enabled = false
+			cfg.CheckIteratorCache.TTL = 0
+			cfg.CheckIteratorCache.MaxResults = 0
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+
+		t.Run("enable_and_ttl_and_max_results_positive", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CheckIteratorCache.Enabled = true
+			cfg.CheckIteratorCache.TTL = 10 * time.Second
+			cfg.CheckIteratorCache.MaxResults = 10000
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("list_objects_iterator_cache", func(t *testing.T) {
+		t.Run("enable_but_ttl_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.ListObjectsIteratorCache.Enabled = true
+			cfg.ListObjectsIteratorCache.TTL = 0
+			cfg.ListObjectsIteratorCache.MaxResults = 1000
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+
+		t.Run("enable_but_ttl_negative", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.ListObjectsIteratorCache.Enabled = true
+			cfg.ListObjectsIteratorCache.TTL = -2 * time.Second
+			cfg.ListObjectsIteratorCache.MaxResults = 1000
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+
+		t.Run("enable_but_max_results_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.ListObjectsIteratorCache.Enabled = true
+			cfg.ListObjectsIteratorCache.TTL = 2 * time.Second
+			cfg.ListObjectsIteratorCache.MaxResults = 0
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+
+		t.Run("disable_but_ttl_and_max_results_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.ListObjectsIteratorCache.Enabled = false
+			cfg.ListObjectsIteratorCache.TTL = 0
+			cfg.ListObjectsIteratorCache.MaxResults = 0
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+
+		t.Run("enable_and_ttl_and_max_results_positive", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.ListObjectsIteratorCache.Enabled = true
+			cfg.ListObjectsIteratorCache.TTL = 10 * time.Second
+			cfg.ListObjectsIteratorCache.MaxResults = 10000
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("cache_controller", func(t *testing.T) {
+		t.Run("enable_but_ttl_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CacheController.Enabled = true
+			cfg.CacheController.TTL = 0
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+		t.Run("enable_but_ttl_negative", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CacheController.Enabled = true
+			cfg.CacheController.TTL = -2 * time.Second
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+		t.Run("enable_and_ttl_positive", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CacheController.Enabled = true
+			cfg.CacheController.TTL = 2 * time.Second
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+		t.Run("disable_and_ttl_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CacheController.Enabled = false
+			cfg.CacheController.TTL = 0
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("cache_ttl_jitter_percentage", func(t *testing.T) {
+		t.Run("valid_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CacheTTLJitterPercentage = 0
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+		t.Run("valid_nonzero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CacheTTLJitterPercentage = 10
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+		t.Run("valid_max", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CacheTTLJitterPercentage = 100
+			err := cfg.Verify()
+			require.NoError(t, err)
+		})
+		t.Run("invalid_over_100", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CacheTTLJitterPercentage = 101
+			err := cfg.Verify()
+			require.Error(t, err)
+		})
+	})
+
+	t.Run("prints_warning_when_log_level_is_none", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Log.Level = "none"
+
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		defer func() {
+			// Restore the original stdout
+			os.Stdout = oldStdout
+			w.Close()
+		}()
+
+		cfg.Verify()
+		w.Close()
+
+		// Read the captured output
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+
+		require.Contains(t, buf.String(), "WARNING: Logging is not enabled. It is highly recommended to enable logging in production environments to avoid masking attacker operations.")
+	})
+
+	t.Run("does_not_print_warning_when_log_level_is_not_none", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Log.Level = "info"
+
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		defer func() {
+			// Restore the original stdout
+			os.Stdout = oldStdout
+			w.Close()
+		}()
+
+		cfg.Verify()
+		w.Close()
+
+		// Read the captured output
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+
+		require.NotContains(t, buf.String(), "WARNING: Logging is not enabled. It is highly recommended to enable logging in production environments to avoid masking attacker operations.")
+	})
+}
+
+func TestVerifyServerSettings(t *testing.T) {
+	t.Run("UpstreamTimeout_cannot_be_less_than_ListObjectsDeadline", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDeadline = 5 * time.Minute
+		cfg.RequestTimeout = 0
+		cfg.HTTP.UpstreamTimeout = 2 * time.Second
+
+		err := cfg.VerifyServerSettings()
+		require.EqualError(t, err, "configured request timeout (2s) cannot be lower than 'listObjectsDeadline' config (5m0s)")
+	})
+	t.Run("UpstreamTimeout_cannot_be_less_than_ListUsersDeadline", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDeadline = 2 * time.Second
+		cfg.ListUsersDeadline = 5 * time.Minute
+		cfg.RequestTimeout = 0
+		cfg.HTTP.UpstreamTimeout = 2 * time.Second
+
+		err := cfg.VerifyServerSettings()
+		require.EqualError(t, err, "configured request timeout (2s) cannot be lower than 'listUsersDeadline' config (5m0s)")
+	})
+
+	t.Run("maxConcurrentReadsForListUsers_not_zero", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxConcurrentReadsForListUsers = 0
+
+		err := cfg.VerifyServerSettings()
+		require.EqualError(t, err, "config 'maxConcurrentReadsForListUsers' cannot be 0")
+	})
+
+	t.Run("empty_request_duration_datastore_query_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDatastoreQueryCountBuckets = []string{}
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("non_int_request_duration_datastore_query_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDatastoreQueryCountBuckets = []string{"12", "45a", "66"}
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("negative_request_duration_datastore_query_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDatastoreQueryCountBuckets = []string{"12", "-45", "66"}
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("empty_request_duration_dispatch_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDispatchCountBuckets = []string{}
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("non_int_request_duration_dispatch_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDispatchCountBuckets = []string{"12", "45a", "66"}
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("negative_request_duration_dispatch_count_buckets", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestDurationDispatchCountBuckets = []string{"12", "-45", "66"}
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("non_positive_check_dispatch_throttling_frequency", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CheckDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 0,
+			Threshold: 30,
+		}
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("non_positive_check_dispatch_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CheckDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 10 * time.Microsecond,
+			Threshold: 0,
+		}
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("non_positive_list_objects_dispatch_throttling_frequency", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 0,
+			Threshold: 30,
+		}
+
+		err := cfg.VerifyServerSettings()
+		require.ErrorContains(t, err, "'listObjectsDispatchThrottling.frequency' must be non-negative time duration")
+	})
+
+	t.Run("non_positive_list_users_dispatch_throttling_frequency", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListUsersDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 0,
+			Threshold: 30,
+		}
+
+		err := cfg.VerifyServerSettings()
+		require.ErrorContains(t, err, "'listUsersDispatchThrottling.frequency' must be non-negative time duration")
+	})
+
+	t.Run("non_positive_list_objects_dispatch_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 10 * time.Microsecond,
+			Threshold: 0,
+		}
+
+		err := cfg.VerifyServerSettings()
+		require.ErrorContains(t, err, "'listObjectsDispatchThrottling.threshold' must be non-negative integer")
+	})
+
+	t.Run("non_positive_list_users_dispatch_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListUsersDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:   true,
+			Frequency: 10 * time.Microsecond,
+			Threshold: 0,
+		}
+
+		err := cfg.VerifyServerSettings()
+		require.ErrorContains(t, err, "'listUsersDispatchThrottling.threshold' must be non-negative integer")
+	})
+
+	t.Run("dispatch_throttling_threshold_larger_than_max_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CheckDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:      true,
+			Frequency:    10 * time.Microsecond,
+			Threshold:    30,
+			MaxThreshold: 29,
+		}
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("list_objects_threshold_larger_than_max_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListObjectsDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:      true,
+			Frequency:    10 * time.Microsecond,
+			Threshold:    30,
+			MaxThreshold: 29,
+		}
+		err := cfg.VerifyServerSettings()
+		require.ErrorContains(t, err, "'listObjectsDispatchThrottling.threshold' must be less than or equal to 'listObjectsDispatchThrottling.maxThreshold'")
+	})
+
+	t.Run("list_users_threshold_larger_than_max_threshold", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.ListUsersDispatchThrottling = DispatchThrottlingConfig{
+			Enabled:      true,
+			Frequency:    10 * time.Microsecond,
+			Threshold:    30,
+			MaxThreshold: 29,
+		}
+		err := cfg.VerifyServerSettings()
+		require.ErrorContains(t, err, "'listUsersDispatchThrottling.threshold' must be less than or equal to 'listUsersDispatchThrottling.maxThreshold'")
+	})
+
+	t.Run("negative_upstream_timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 0
+		cfg.HTTP.Enabled = true
+		cfg.HTTP.UpstreamTimeout = -3 * time.Second
+		cfg.ListObjectsDeadline = -4 * time.Second
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("negative_list_objects_deadline", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 0
+		cfg.HTTP.Enabled = true
+		cfg.HTTP.UpstreamTimeout = 3 * time.Second
+		cfg.ListObjectsDeadline = -4 * time.Second
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("negative_list_users_deadline", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 0
+		cfg.HTTP.Enabled = true
+		cfg.HTTP.UpstreamTimeout = 3 * time.Second
+		cfg.ListUsersDeadline = -4 * time.Second
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("list_objects_deadline_request_timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 500 * time.Millisecond
+		cfg.ListObjectsDeadline = 4 * time.Second
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("list_users_deadline_request_timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 500 * time.Millisecond
+		cfg.ListUsersDeadline = 4 * time.Second
+
+		err := cfg.VerifyServerSettings()
+		require.Error(t, err)
+	})
+
+	t.Run("does_not_print_warning_when_log_level_is_not_none", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Log.Level = "info"
+
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		defer func() {
+			// Restore the original stdout
+			os.Stdout = oldStdout
+			w.Close()
+		}()
+
+		cfg.VerifyServerSettings()
+		w.Close()
+
+		// Read the captured output
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+
+		require.NotContains(t, buf.String(), "WARNING: Logging is not enabled. It is highly recommended to enable logging in production environments to avoid masking attacker operations.")
+	})
+
+	t.Run("verify_open_conns_settings", func(t *testing.T) {
+		t.Run("error_when_open_max_less_than_open_min", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Datastore.MaxOpenConns = 50
+			cfg.Datastore.MinOpenConns = 51
+			err := cfg.VerifyServerSettings()
+			require.Error(t, err)
+		})
+
+		t.Run("no_error_when_open_max_equal_open_min", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Datastore.MaxOpenConns = 50
+			cfg.Datastore.MinOpenConns = 50
+			err := cfg.VerifyServerSettings()
+			require.NoError(t, err)
+		})
+
+		t.Run("error_when_open_min_is_less_than_idle_min", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Datastore.MinOpenConns = 50
+			cfg.Datastore.MaxOpenConns = 52
+			cfg.Datastore.MinIdleConns = 51
+			err := cfg.VerifyServerSettings()
+			require.Error(t, err)
+		})
+
+		t.Run("no_error_when_open_min_is_less_than_idle_min", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Datastore.MinOpenConns = 50
+			cfg.Datastore.MaxOpenConns = 52
+			cfg.Datastore.MinIdleConns = 50
+			err := cfg.VerifyServerSettings()
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("verify_ping_settings", func(t *testing.T) {
+		t.Run("negative_ping_timeout_duration", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Datastore.PingTimeout = -2 * time.Second
+
+			err := cfg.VerifyServerSettings()
+			require.EqualError(t, err, "datastore PingTimeout must be greater than 0")
+		})
+
+		t.Run("zero_ping_timeout_duration", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Datastore.PingTimeout = 0
+
+			err := cfg.VerifyServerSettings()
+			require.EqualError(t, err, "datastore PingTimeout must be greater than 0")
+		})
+
+		t.Run("negative_ping_retry_max_elapsed_time_duration", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Datastore.PingRetryMaxElapsedTime = -2 * time.Second
+
+			err := cfg.VerifyServerSettings()
+			require.EqualError(t, err, "datastore PingRetryMaxElapsedTime must be greater than 0")
+		})
+
+		t.Run("zero_ping_retry_max_elapsed_time_duration", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Datastore.PingRetryMaxElapsedTime = 0
+
+			err := cfg.VerifyServerSettings()
+			require.EqualError(t, err, "datastore PingRetryMaxElapsedTime must be greater than 0")
+		})
+
+		t.Run("error_when_ping_retry_max_elapsed_time_less_than_ping_timeout", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Datastore.PingRetryMaxElapsedTime = 5 * time.Second
+			cfg.Datastore.PingTimeout = 10 * time.Second
+			err := cfg.VerifyServerSettings()
+			require.EqualError(t, err, "datastore PingRetryMaxElapsedTime must not be less than datastore PingTimeout")
+		})
+
+		t.Run("no_error_when_ping_retry_max_elapsed_time_equal_to_ping_timeout", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Datastore.PingRetryMaxElapsedTime = 10 * time.Second
+			cfg.Datastore.PingTimeout = 10 * time.Second
+			err := cfg.VerifyServerSettings()
+			require.NoError(t, err)
+		})
+	})
+}
+
+func TestVerifyBinarySettings(t *testing.T) {
+	t.Run("failing_to_set_http_cert_path_will_not_allow_server_to_start", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.HTTP.TLS = &TLSConfig{
+			Enabled: true,
+			KeyPath: "some/path",
+		}
+
+		err := cfg.VerifyBinarySettings()
+		require.EqualError(t, err, "'http.tls.cert' and 'http.tls.key' configs must be set")
+	})
+
+	t.Run("failing_to_set_grpc_cert_path_will_not_allow_server_to_start", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.GRPC.TLS = &TLSConfig{
+			Enabled: true,
+			KeyPath: "some/path",
+		}
+
+		err := cfg.VerifyBinarySettings()
+		require.EqualError(t, err, "'grpc.tls.cert' and 'grpc.tls.key' configs must be set")
+	})
+
+	t.Run("failing_to_set_http_key_path_will_not_allow_server_to_start", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.HTTP.TLS = &TLSConfig{
+			Enabled:  true,
+			CertPath: "some/path",
+		}
+
+		err := cfg.VerifyBinarySettings()
+		require.EqualError(t, err, "'http.tls.cert' and 'http.tls.key' configs must be set")
+	})
+
+	t.Run("failing_to_set_grpc_key_path_will_not_allow_server_to_start", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.GRPC.TLS = &TLSConfig{
+			Enabled:  true,
+			CertPath: "some/path",
+		}
+
+		err := cfg.VerifyBinarySettings()
+		require.EqualError(t, err, "'grpc.tls.cert' and 'grpc.tls.key' configs must be set")
+	})
+
+	t.Run("non_log_format", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Log.Format = "notaformat"
+
+		err := cfg.VerifyBinarySettings()
+		require.EqualError(t, err, "config 'log.format' must be one of ['text', 'json']")
+	})
+
+	t.Run("invalid_log_timestamp_format", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Log.TimestampFormat = "notatimestampformat"
+
+		err := cfg.VerifyBinarySettings()
+		require.EqualError(t, err, "config 'log.TimestampFormat' must be one of ['Unix', 'ISO8601']")
+	})
+
+	t.Run("negative_request_timeout_duration", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = -1 * time.Second
+
+		err := cfg.VerifyBinarySettings()
+		require.EqualError(t, err, "requestTimeout must be a non-negative time duration")
+	})
+
+	t.Run("negative_http_upstream_timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.RequestTimeout = 0
+		cfg.HTTP.Enabled = true
+		cfg.HTTP.UpstreamTimeout = -1 * time.Second
+
+		err := cfg.VerifyBinarySettings()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "http.upstreamTimeout must be a non-negative time duration")
+	})
+
+	t.Run("invalid_authzen_base_url", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Authzen.BaseURL = "not-a-url"
+
+		err := cfg.VerifyBinarySettings()
+		require.ErrorContains(t, err, "config 'authzen.baseURL'")
+		require.ErrorContains(t, err, "scheme must be http or https")
+	})
+
+	t.Run("valid_authzen_base_url", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Authzen.BaseURL = "https://pdp.example.com/openfga"
+
+		err := cfg.VerifyBinarySettings()
+		require.NoError(t, err)
+	})
+
+	t.Run("authzen_base_url_with_user_info", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Authzen.BaseURL = "https://user:pass@example.com"
+
+		err := cfg.VerifyBinarySettings()
+		require.ErrorContains(t, err, "config 'authzen.baseURL'")
+		require.ErrorContains(t, err, "URL must not include user info")
+	})
+
+	t.Run("authzen_base_url_with_query", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Authzen.BaseURL = "https://example.com?q=x"
+
+		err := cfg.VerifyBinarySettings()
+		require.ErrorContains(t, err, "config 'authzen.baseURL'")
+		require.ErrorContains(t, err, "URL must not include a query string or fragment")
+	})
+
+	t.Run("empty_authzen_base_url_is_valid", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Authzen.BaseURL = ""
+
+		err := cfg.VerifyBinarySettings()
+		require.NoError(t, err)
+	})
+
+	t.Run("invalid_log_level", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Log.Level = "invalid_level"
+
+		err := cfg.VerifyBinarySettings()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "config 'log.level' must be one of ['none', 'debug', 'info', 'warn', 'error', 'panic', 'fatal']")
+	})
+
+	t.Run("playground_enabled_without_http", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Playground.Enabled = true
+		cfg.HTTP.Enabled = false
+
+		err := cfg.VerifyBinarySettings()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "the HTTP server must be enabled to run the openfga playground")
+	})
+
+	t.Run("playground_enabled_with_unsupported_authn", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Playground.Enabled = true
+		cfg.HTTP.Enabled = true
+		cfg.Authn.Method = "unsupported"
+
+		err := cfg.VerifyBinarySettings()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "the playground only supports authn method 'none'")
+	})
+
+	t.Run("playground_enabled_with_preshared_authn", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Playground.Enabled = true
+		cfg.HTTP.Enabled = true
+		cfg.Authn.Method = "preshared"
+
+		err := cfg.VerifyBinarySettings()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "the playground only supports authn method 'none'")
+	})
+
+	t.Run("playground_enabled_with_supported_authn", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Playground.Enabled = true
+		cfg.HTTP.Enabled = true
+		cfg.Authn.Method = "none"
+
+		err := cfg.VerifyBinarySettings()
+		require.NoError(t, err)
+	})
+
+	t.Run("prints_warning_when_log_level_is_none", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Log.Level = "none"
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		defer func() {
+			// Restore the original stdout
+			os.Stdout = oldStdout
+			w.Close()
+		}()
+
+		cfg.VerifyBinarySettings()
+		w.Close()
+		// Read the captured output
+		var buf bytes.Buffer
+
+		io.Copy(&buf, r)
+		require.Contains(t, buf.String(), "WARNING: Logging is not enabled. It is highly recommended to enable logging in production environments to avoid masking attacker operations.")
+	})
+
+	t.Run("oidc_method_requires_issuer", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Authn.Method = "oidc"
+		cfg.Authn.Audience = "some-audience"
+		cfg.Authn.Issuer = ""
+
+		err := cfg.VerifyBinarySettings()
+		require.EqualError(t, err, "'authn.oidc.issuer' config must be set when authn method is 'oidc'")
+	})
+
+	t.Run("oidc_method_requires_audience", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Authn.Method = "oidc"
+		cfg.Authn.Issuer = "https://issuer.example.com"
+		cfg.Authn.Audience = ""
+
+		err := cfg.VerifyBinarySettings()
+		require.EqualError(t, err, "'authn.oidc.audience' config must be set when authn method is 'oidc'")
+	})
+
+	t.Run("oidc_method_with_issuer_and_audience_passes", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Authn.Method = "oidc"
+		cfg.Authn.Issuer = "https://issuer.example.com"
+		cfg.Authn.Audience = "some-audience"
+
+		err := cfg.VerifyBinarySettings()
+		require.NoError(t, err)
+	})
+
+	// whitespace is a valid StringOrURI per RFC 7519 §4.1.1 and §4.1.3; whitespace-only issuer and audience must be accepted
+	t.Run("oidc_method_whitespace_issuer_is_valid", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Authn.Method = "oidc"
+		cfg.Authn.Issuer = "   "
+		cfg.Authn.Audience = "some-audience"
+
+		err := cfg.VerifyBinarySettings()
+		require.NoError(t, err)
+	})
+
+	t.Run("oidc_method_whitespace_audience_is_valid", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Authn.Method = "oidc"
+		cfg.Authn.Issuer = "https://issuer.example.com"
+		cfg.Authn.Audience = "   "
+
+		err := cfg.VerifyBinarySettings()
+		require.NoError(t, err)
+	})
+}
+
+func TestVerifyBinarySettings_TraceSampler(t *testing.T) {
+	validSamplers := []string{
+		"always_on", "always_off", "traceidratio",
+		"parentbased_always_on", "parentbased_always_off", "parentbased_traceidratio",
+	}
+	for _, sampler := range validSamplers {
+		t.Run("valid_"+sampler, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Trace.Enabled = true
+			cfg.Trace.Sampler = sampler
+			err := cfg.VerifyBinarySettings()
+			require.NoError(t, err)
+		})
+	}
+
+	t.Run("uppercase_sampler_accepted", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Trace.Enabled = true
+		cfg.Trace.Sampler = "ALWAYS_ON"
+		err := cfg.VerifyBinarySettings()
+		require.NoError(t, err)
+	})
+
+	t.Run("unrecognized_sampler_does_not_error", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Trace.Enabled = true
+		cfg.Trace.Sampler = "jaeger_remote"
+		err := cfg.VerifyBinarySettings()
+		require.NoError(t, err)
+	})
+
+	t.Run("tracing_disabled_skips_sampler_validation", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Trace.Enabled = false
+		cfg.Trace.Sampler = "totally_invalid"
+		err := cfg.VerifyBinarySettings()
+		require.NoError(t, err)
+	})
+}
+
+func TestDefaultMaxConditionValuationCost(t *testing.T) {
+	// check to make sure DefaultMaxConditionEvaluationCost never drops below an explicit 100, because
+	// API compatibility can be impacted otherwise
+	t.Run("max_condition_evaluation_cost_too_low", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxConditionEvaluationCost = 99
+
+		err := cfg.Verify()
+		require.Error(t, err)
+	})
+	t.Run("max_condition_evaluation_cost_valid", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxConditionEvaluationCost = uint64(120)
+		viper.Set("maxConditionEvaluationCost", uint64(120))
+
+		err := cfg.Verify()
+		require.NoError(t, err)
+	})
+	require.Equal(t, uint64(120), MaxConditionEvaluationCost())
+}
+
+func TestDefaultContextTimeout(t *testing.T) {
+	var testCases = map[string]struct {
+		config                 Config
+		expectedContextTimeout time.Duration
+	}{
+		"request_timeout_provided": {
+			config: Config{
+				RequestTimeout: 5 * time.Second,
+				HTTP: HTTPConfig{
+					Enabled:         true,
+					UpstreamTimeout: 1 * time.Second,
+				},
+			},
+			expectedContextTimeout: 5*time.Second + additionalUpstreamTimeout,
+		},
+		"only_http_config_timeout": {
+			config: Config{
+				HTTP: HTTPConfig{
+					Enabled:         true,
+					UpstreamTimeout: 1 * time.Second,
+				},
+			},
+			expectedContextTimeout: 1 * time.Second,
+		},
+		"http_not_enable": {
+			config: Config{
+				HTTP: HTTPConfig{
+					Enabled:         false,
+					UpstreamTimeout: 1 * time.Second,
+				},
+			},
+			expectedContextTimeout: 0,
+		},
+	}
+	for name, test := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			timeout := DefaultContextTimeout(&test.config)
+			require.Equal(t, test.expectedContextTimeout, timeout)
+		})
+	}
+}
+
+func TestPlaygroundAddr(t *testing.T) {
+	t.Run("returns_Addr_when_set", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Playground.Addr = "0.0.0.0:4000"
+		cfg.Playground.Port = 3000
+		require.Equal(t, "0.0.0.0:4000", cfg.Playground.PlaygroundAddr())
+	})
+
+	t.Run("falls_back_to_Port_bound_to_localhost_when_Addr_and_Port_are_empty", func(t *testing.T) {
+		cfg := DefaultConfig()
+		require.Equal(t, "127.0.0.1:3000", cfg.Playground.PlaygroundAddr())
+	})
+
+	t.Run("uses_custom_port_when_Addr_is_empty", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Playground.Port = 9090
+		require.Equal(t, "127.0.0.1:9090", cfg.Playground.PlaygroundAddr())
+	})
+}
