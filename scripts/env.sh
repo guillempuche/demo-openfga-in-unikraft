@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034 # variables here are used by the scripts that source this file
 # Shared settings for the Unikraft Cloud scripts. Sourced, not executed.
 #
 # Secrets (FGA_KEY, POSTGRES_PASSWORD, optional OPENFGA_DATASTORE_URI) come

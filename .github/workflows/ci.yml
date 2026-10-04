@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  models:
+    name: FGA model tests
+    runs-on: ubuntu-latest
+    env:
+      FGA_VERSION: 0.7.15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install fga CLI
+        run: |
+          curl -fsSL "https://github.com/openfga/cli/releases/download/v${FGA_VERSION}/fga_${FGA_VERSION}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin fga
+          fga version
+      # One glob: --tests takes a single path or pattern, so listing two files
+      # would silently test only the first.
+      - run: fga model test --tests 'authz/models/*.fga.yaml'
+
+  api:
+    name: API typecheck and tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  scripts:
+    name: Shell scripts and compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/*.sh scripts/env.sh
+      - run: shellcheck -x -S warning scripts/*.sh scripts/env.sh
+      - run: docker compose -f authz/docker-compose.yaml --env-file authz/.env.example config --quiet
+
+  api-image:
+    name: API rootfs builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The same Dockerfile the Kraftfile uses for the unikernel rootfs.
+      - run: docker build --tag demo-fga-api-rootfs api
