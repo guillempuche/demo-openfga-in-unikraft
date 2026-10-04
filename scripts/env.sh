@@ -1,7 +1,8 @@
 # Shared settings for the Unikraft Cloud scripts. Sourced, not executed.
 #
-# Secrets (NEON_OPENFGA_DIRECT_URL, FGA_KEY) come from the environment or the
-# gitignored .env at the repo root. Scripts never echo them and never use
+# Secrets (FGA_KEY, POSTGRES_PASSWORD, optional OPENFGA_DATASTORE_URI) come
+# from the environment or the gitignored .env at the repo root; variables that
+# are already set win over .env. Scripts never echo them and never use
 # `set -x`. The unikraft CLI authenticates through its own profile
 # (`unikraft login`), so UKC_TOKEN is not read here.
 
@@ -9,11 +10,23 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Load .env without overriding anything the caller already exported, so
+# `UNIKRAFT_PROFILE=other ./scripts/x.sh` does what it says. Only plain
+# KEY=VALUE lines are read (optionally quoted); nothing in .env is executed.
 if [[ -f "$ROOT/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$ROOT/.env"
-  set +a
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    [[ -n "${!key+set}" ]] && continue
+    if [[ "$value" != [\"\']* ]]; then
+      value="${value%%[[:space:]]#*}" # unquoted: drop a trailing comment
+    fi
+    value="${value%\"}"; value="${value#\"}"
+    value="${value%\'}"; value="${value#\'}"
+    export "$key=$value"
+  done <"$ROOT/.env"
+  unset line key value
 fi
 
 # Pin the CLI profile explicitly so these scripts never act on whichever
@@ -41,7 +54,6 @@ API_NAME="${PREFIX}api"
 POSTGRES_IMAGE="$UNIKRAFT_ORG/${POSTGRES_NAME}:latest"
 OPENFGA_IMAGE="$UNIKRAFT_ORG/${OPENFGA_NAME}:latest"
 API_IMAGE="$UNIKRAFT_ORG/${API_NAME}:latest"
-OPENFGA_VERSION="v1.11.0"
 FGA_STORE_NAME="${FGA_STORE_NAME:-demo-fga}"
 TUNNEL_PORT="${TUNNEL_PORT:-18080}"
 
@@ -55,8 +67,10 @@ require() {
   done
 }
 
-# Quote a value as a YAML scalar (a JSON string is valid YAML).
-yq_str() { jq -Rn --arg v "$1" '$v'; }
+# Quote a value as a YAML scalar (a JSON string is valid YAML). The value goes
+# to jq on stdin (printf is a builtin), never on jq's argv, so secrets don't
+# show up in the process list.
+yq_str() { printf '%s' "$1" | jq -Rs .; }
 
 # Mask credentials in anything that might echo a connection string.
 redact() { sed -E 's#(postgres(ql)?://)[^@[:space:]]+@#\1***@#g'; }

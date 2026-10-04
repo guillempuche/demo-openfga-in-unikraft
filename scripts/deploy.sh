@@ -3,7 +3,8 @@
 #
 # Everything runs on Unikraft Cloud, on the account's private network:
 # - demo-fga-postgres: private, persistent volume demo-fga-pgdata, scale-to-zero off.
-# - demo-fga-migrate: one-off `openfga migrate` against postgres, deleted when done.
+# - demo-fga-migrate: one-off `openfga migrate` against postgres, deleted when
+#   done; the deploy stops unless it exits 0.
 # - demo-fga-openfga: private (no published ports), scale-to-zero off,
 #   preshared-key auth. Reachable only as demo-fga-openfga.internal:8080.
 # - demo-fga-api: public HTTPS, talks to OpenFGA over .internal.
@@ -82,8 +83,11 @@ EOF
 fi
 
 if [[ "$target" == migrate || "$target" == all ]]; then
-  # Same OpenFGA image, `migrate` instead of `run`. on-failure restarts it
-  # while postgres is still initialising; it stops once migrations succeed.
+  # Same OpenFGA image, `migrate` instead of `run`, on the private network.
+  # restart=never so a failed run stays stopped and its exit code is final;
+  # the loop retries a few times because postgres may still be initialising.
+  # Plain assignment (not inside the heredoc) so a missing secret aborts here.
+  uri="$(datastore_uri)"
   cat >"$tmp" <<EOF
 name: $MIGRATE_NAME
 metro: $UNIKRAFT_METRO
@@ -92,22 +96,36 @@ autostart: true
 resources:
   memory: 256MiB
 restart:
-  policy: on-failure
+  policy: never
 runtime:
   args: [/usr/bin/openfga, migrate]
   env:
     OPENFGA_DATASTORE_ENGINE: postgres
-    OPENFGA_DATASTORE_URI: $(yq_str "$(datastore_uri)")
+    OPENFGA_DATASTORE_URI: $(yq_str "$uri")
 EOF
-  run_from_yaml "$MIGRATE_NAME"
-  unikraft instances wait "$MIGRATE_NAME" --until state==stopped --timeout 5m -o quiet
-  unikraft instances get "$MIGRATE_NAME" -f name,state,stop
-  unikraft instances logs "$MIGRATE_NAME" 2>&1 | redact | tail -n 15
-  unikraft instances delete "$MIGRATE_NAME" -o quiet
+  migrated=false
+  for attempt in 1 2 3 4 5; do
+    run_from_yaml "$MIGRATE_NAME"
+    unikraft instances wait "$MIGRATE_NAME" --until state==stopped --timeout 5m -o quiet
+    code="$(unikraft instances get "$MIGRATE_NAME" -f stop -o json | jq -r '.[0].stop["exit-code"] // "unknown"')"
+    unikraft instances logs "$MIGRATE_NAME" 2>&1 | redact | tail -n 15 || true
+    unikraft instances delete "$MIGRATE_NAME" -o quiet >/dev/null
+    if [[ "$code" == 0 ]]; then
+      migrated=true
+      break
+    fi
+    echo "migrate attempt $attempt exited with $code; retrying in 10s" >&2
+    sleep 10
+  done
+  if ! $migrated; then
+    echo "error: openfga migrate failed; not deploying OpenFGA on an unmigrated database" >&2
+    exit 1
+  fi
 fi
 
 if [[ "$target" == openfga || "$target" == all ]]; then
   require FGA_KEY
+  uri="$(datastore_uri)"
   cat >"$tmp" <<EOF
 name: $OPENFGA_NAME
 metro: $UNIKRAFT_METRO
@@ -122,7 +140,7 @@ scale-to-zero:
 runtime:
   env:
     OPENFGA_DATASTORE_ENGINE: postgres
-    OPENFGA_DATASTORE_URI: $(yq_str "$(datastore_uri)")
+    OPENFGA_DATASTORE_URI: $(yq_str "$uri")
     OPENFGA_DATASTORE_MAX_OPEN_CONNS: "10"
     OPENFGA_AUTHN_METHOD: preshared
     OPENFGA_AUTHN_PRESHARED_KEYS: $(yq_str "$FGA_KEY")

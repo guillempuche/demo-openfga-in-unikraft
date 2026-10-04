@@ -21,10 +21,15 @@ guard() {
   [[ "$1" == "$PREFIX"* || "$1" == "$UNIKRAFT_ORG/$PREFIX"* ]] || { echo "refusing to delete $1" >&2; exit 1; }
 }
 
+# Deletes that fail are reported and make the script exit non-zero at the end,
+# so a leftover volume or image never looks like a clean run.
+failures=0
+fail() { echo "error: $*" >&2; failures=$((failures + 1)); }
+
 for name in "$API_NAME" "$OPENFGA_NAME" "$MIGRATE_NAME" "$POSTGRES_NAME"; do
   guard "$name"
   if instance_exists "$name"; then
-    unikraft instances delete "$name" -o quiet && echo "deleted $name"
+    unikraft instances delete "$name" -o quiet >/dev/null && echo "deleted $name" || fail "could not delete instance $name"
   else
     echo "$name: not found"
   fi
@@ -32,14 +37,33 @@ done
 
 if $volume; then
   guard "$POSTGRES_VOLUME"
-  # The volume detaches asynchronously after its instance is deleted.
-  unikraft instances wait "$POSTGRES_NAME" --until state==deleted --timeout 1m -o quiet 2>/dev/null || true
-  unikraft volumes delete "$POSTGRES_VOLUME" || true
+  if unikraft volumes get "$POSTGRES_VOLUME" -f name -o json >/dev/null 2>&1; then
+    # The volume detaches asynchronously after its instance is deleted.
+    if unikraft volumes wait "$POSTGRES_VOLUME" --until state==available --timeout 2m -o quiet >/dev/null &&
+      unikraft volumes delete "$POSTGRES_VOLUME" -o quiet >/dev/null; then
+      echo "deleted volume $POSTGRES_VOLUME"
+    else
+      fail "could not delete volume $POSTGRES_VOLUME (still attached?)"
+    fi
+  else
+    echo "$POSTGRES_VOLUME: not found"
+  fi
 fi
 
 if $images; then
   for image in "$API_IMAGE" "$OPENFGA_IMAGE" "$POSTGRES_IMAGE"; do
     guard "$image"
-    unikraft images delete "$image" || true
+    if unikraft images get "$image" -f ref -o json >/dev/null 2>&1; then
+      unikraft images delete "$image" -o quiet >/dev/null && echo "deleted image $image" || fail "could not delete image $image"
+    else
+      echo "$image: not found"
+    fi
   done
+  # Metros keep cached copies (index.<metro>.unikraft.cloud/<org>/...) that
+  # `images list` may still show for a while; they can't be deleted directly.
+fi
+
+if ((failures > 0)); then
+  echo "cleanup finished with $failures error(s); check: unikraft instances list; unikraft volumes list" >&2
+  exit 1
 fi

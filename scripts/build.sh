@@ -18,6 +18,9 @@ build_push() {
   unikraft build "$dir" --output "$outdir/$name.oci.tar"
   echo "==> pushing unikraft.io/$image"
   unikraft images copy "$outdir/$name.oci.tar" "unikraft.io/$image"
+  # Archives are large (the postgres one is several hundred MB); free the space
+  # before building the next image.
+  rm -f "$outdir/$name.oci.tar"
 }
 
 case "$target" in
