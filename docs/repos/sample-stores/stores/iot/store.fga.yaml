@@ -1,0 +1,82 @@
+# Documentation: https://openfga.dev/docs/modeling/advanced/iot
+# FGA Playground: https://play.fga.dev/sandbox/?store=iot
+name: IoT
+model_file: model.fga
+tuples:
+  # Beth is an IT Admin on Device 1
+  - user: user:beth
+    relation: it_admin
+    object: device:1
+  # Dianne is an IT Admin on Device 1
+  - user: user:diane
+    relation: it_admin
+    object: device:1
+  # Anne is a Security Guard on Device 1
+  - user: user:anne
+    relation: security_guard
+    object: device:1
+  # Charles is a Security Guard on Device 1
+  - user: user:charles
+    relation: security_guard
+    object: device:1
+  # IT Admins on Device Group 1 are IT Admins on Device 2
+  - user: device_group:group1#it_admin
+    relation: it_admin
+    object: device:2
+  # Security Guards on Device Group 1 are Security Guards on Device 2
+  - user: device_group:group1#security_guard
+    relation: security_guard
+    object: device:2
+  # IT Admins on Device Group 1 are IT Admins on Device 3
+  - user: device_group:group1#it_admin
+    relation: it_admin
+    object: device:3
+  # Security Guards on Device Group 1 are Security Guards on Device 3
+  - user: device_group:group1#security_guard
+    relation: security_guard
+    object: device:3
+  # Diane is a Security Guard on Device Group 1
+  - user: user:diane
+    relation: it_admin
+    object: device_group:group1
+  # Charles is a Security Guard on Device Group 1
+  - user: user:charles
+    relation: security_guard
+    object: device_group:group1
+tests:
+  - name: Test specific user permissions on each device
+    check:
+      - user: user:anne
+        object: device:1
+        assertions:
+          it_admin: false
+          can_view_recorded_video: true
+      - user: user:charles
+        object: device:2
+        assertions:
+          can_rename_device: false
+      - user: user:diane
+        object: device:2
+        assertions:
+          can_rename_device: true
+
+  - name: Test who can view live video on device:1
+    list_users:
+      - object: device:1
+        user_filter:
+          - type: user
+        assertions:
+          can_view_live_video:
+            users:
+              - user:diane
+              - user:charles
+              - user:anne
+              - user:beth
+
+  - name: Test in which devices can Beth view live video
+    list_objects:
+      - type: device
+        user: user:beth
+        assertions:
+          can_view_live_video:
+            - device:1
