@@ -1,16 +1,14 @@
 spec: v0.7
 
-name: openfga-server
+name: demo-fga-openfga
 
 runtime: base-compat:latest
 
 targets:
   - kraftcloud/x86_64
 
-# Paths are relative to this Kraftfile. The Dockerfile lives at the repo root
-# and uses the repo root as its build context.
 rootfs:
-  source: ../../../Dockerfile.openfga
+  source: ./Dockerfile
   format: erofs
 
 cmd: ["/usr/bin/openfga", "run"]

@@ -29,10 +29,10 @@ case "$target" in
 esac
 
 if [[ "$target" == postgres || "$target" == all ]]; then
-  build_push postgres "$ROOT/infrastructure/kraftcloud/postgres" "$POSTGRES_IMAGE"
+  build_push postgres "$ROOT/infrastructure/unikraft/postgres" "$POSTGRES_IMAGE"
 fi
 if [[ "$target" == openfga || "$target" == all ]]; then
-  build_push openfga "$ROOT/infrastructure/kraftcloud/openfga" "$OPENFGA_IMAGE"
+  build_push openfga "$ROOT/infrastructure/unikraft/openfga" "$OPENFGA_IMAGE"
 fi
 if [[ "$target" == api || "$target" == all ]]; then
   build_push api "$ROOT/api" "$API_IMAGE"
