@@ -1,6 +1,6 @@
 # AI Agent Context
 
-Context for AI coding agents (Claude Code, Codex, Cursor, Copilot, and others) working on this repository. User-facing documentation is in [README.md](README.md); measured results are in [docs/RESULTS.md](docs/RESULTS.md).
+Context for AI coding agents (Claude Code, Codex, OpenCode, Cursor, Copilot, Gemini CLI, and others) working on this repository. This file is the single source of agent instructions: Codex, OpenCode, Cursor, Copilot and Claude Code read it directly, and Gemini CLI via `.gemini/settings.json`. User-facing documentation is in [README.md](README.md); measured results are in [docs/RESULTS.md](docs/RESULTS.md).
 
 ## Project overview
 
@@ -19,6 +19,16 @@ Example of OpenFGA (ReBAC, fine-grained authorization) running on Unikraft Cloud
 
 Tooling: OpenFGA CLI `fga`, `unikraft` CLI 0.5.x (not the deprecated `kraft cloud`), Node.js 24 (runs `.ts` natively), Docker with BuildKit, jq. `nix develop` provides all of them except Docker.
 
+## Skills
+
+Reusable instructions in the Agent Skills format live in `.agents/skills/` (see [.agents/skills/README.md](.agents/skills/README.md)):
+
+- `unikraft`: the `unikraft` CLI (build, run, instances, tunnels, keeping secrets out of output). Use it before running any `unikraft` command. Vendored from github.com/guillempuche/ai-skill-unikraft; refresh with `./scripts/sync-agent-skills.sh`.
+- `git-commit-messages`: the commit format below.
+- `write-comments`: how to write code comments.
+
+Codex and OpenCode load them from `.agents/skills/`. Claude Code loads the repo skills through symlinks in `.claude/skills/` and gets `unikraft` from the `unikraft@ai-standards` plugin. The guardrails below apply whether or not a skill is loaded.
+
 ## Layout
 
 ```
@@ -27,7 +37,8 @@ authz/models/               fga.mod, projects.fga, tasks.fga, *.fga.yaml tests
 authz/seed/tuples.yaml      synthetic tuples for the demo store
 api/                        server.ts, server.test.ts, Kraftfile, Dockerfile
 infrastructure/unikraft/    openfga/ and postgres/ Kraftfiles and Dockerfiles
-scripts/                    env.sh (shared), build, deploy, tunnel, seed, test-remote, verify, cleanup
+scripts/                    env.sh (shared), build, deploy, tunnel, seed, test-remote, verify, cleanup, sync-agent-skills
+.agents/skills/             agent skills (unikraft, git-commit-messages, write-comments); .claude/skills/ symlinks the repo ones
 docs/RESULTS.md             measured results; docs/1-*, docs/2-* are historical (legacy CLI)
 docs/repos/                 read-only git subtree copies of OpenFGA repos (server, api, js-sdk, cli, language, sample-stores); see docs/repos/README.md
 .github/workflows/ci.yml    CI: model tests, API typecheck + tests, shellcheck, API rootfs build
@@ -80,7 +91,7 @@ Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. 
 
 ## Conventions
 
-- Commit messages: `type(scope): subject` in the imperative, with a bulleted past-tense body; types `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `cicd`, `ai`; scopes `authz`, `api`, `infra`, `nix`. Full rules: [.claude/skills/git-commit-messages/SKILL.md](.claude/skills/git-commit-messages/SKILL.md).
+- Commit messages: `type(scope): subject` in the imperative, with a bulleted past-tense body; types `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `cicd`, `ai`; scopes `authz`, `api`, `infra`, `nix`. Full rules: [.agents/skills/git-commit-messages/SKILL.md](.agents/skills/git-commit-messages/SKILL.md).
 - Shell scripts: `#!/usr/bin/env bash`, source `scripts/env.sh`, pass `shellcheck -x -S warning`.
 - The API has no runtime dependencies (only `node:` modules and `fetch`); keep TypeScript to erasable syntax (`erasableSyntaxOnly`).
 - Each `.fga` module has a `.fga.yaml` test file beside it, covering positive, negative and inherited cases.
@@ -90,4 +101,3 @@ Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. 
 
 - [OpenFGA documentation](https://openfga.dev/docs) and [FGA DSL](https://openfga.dev/docs/configuration-language)
 - [unikraft CLI](https://unikraft.com/docs/cli/unikraft) and [networking](https://unikraft.com/docs/platform/networking)
-- Claude Code users can also load the `unikraft:unikraft` plugin skill; everything an agent needs to work safely is in this file.
