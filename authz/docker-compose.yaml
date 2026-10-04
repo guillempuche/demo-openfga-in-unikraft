@@ -39,7 +39,6 @@ services:
         condition: service_completed_successfully
     image: openfga/openfga:v1.11.0
     environment: # Full list https://github.com/openfga/openfga/blob/main/cmd/run/flags.go, https://github.com/openfga/openfga/blob/main/.config-schema.json
-      - OPENFGA_ACCESS_CONTROL_STORE_ID=${OPENFGA_ACCESS_CONTROL_STORE_ID}
       - OPENFGA_AUTHN_METHOD=preshared
       - OPENFGA_AUTHN_PRESHARED_KEYS=${OPENFGA_AUTHN_PRESHARED_KEYS}
       - OPENFGA_DATASTORE_ENGINE=postgres
