@@ -14,6 +14,7 @@ Which agent finds what:
 | --- | --- | --- |
 | Codex | `.agents/skills/` | all three |
 | OpenCode | `.opencode/skills/`, `.claude/skills/`, `.agents/skills/` | all three |
+| Mastra Code | `.mastracode/skills/`, `.claude/skills/`, `.agents/skills/` | all three |
 | Claude Code | `.claude/skills/` (symlinks to the repo skills here) and installed plugins | `git-commit-messages`, `write-comments`; `unikraft` comes from the plugin (`/plugin marketplace add guillempuche/ai-standards`, then `/plugin install unikraft@ai-standards`) |
 
 `unikraft` is deliberately not linked into `.claude/skills/`, so Claude Code users with the plugin don't get it twice.

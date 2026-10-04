@@ -1,6 +1,6 @@
 # AI Agent Context
 
-Context for AI coding agents (Claude Code, Codex, OpenCode, Cursor, Copilot, Gemini CLI, and others) working on this repository. This file is the single source of agent instructions: Codex, OpenCode, Cursor, Copilot and Claude Code read it directly, and Gemini CLI via `.gemini/settings.json`. User-facing documentation is in [README.md](README.md); measured results are in [docs/RESULTS.md](docs/RESULTS.md).
+Context for AI coding agents (Claude Code, Codex, OpenCode, Mastra Code, Cursor, Copilot, Gemini CLI, and others) working on this repository. This file is the single source of agent instructions: Codex, OpenCode, Mastra Code, Cursor, Copilot and Claude Code read it directly, and Gemini CLI via `.gemini/settings.json`. User-facing documentation is in [README.md](README.md); measured results are in [docs/RESULTS.md](docs/RESULTS.md).
 
 ## Project overview
 
@@ -27,7 +27,7 @@ Reusable instructions in the Agent Skills format live in `.agents/skills/` (see 
 - `git-commit-messages`: the commit format below.
 - `write-comments`: how to write code comments.
 
-Codex and OpenCode load them from `.agents/skills/`. Claude Code loads the repo skills through symlinks in `.claude/skills/` and gets `unikraft` from the `unikraft@ai-standards` plugin. The guardrails below apply whether or not a skill is loaded.
+Codex, OpenCode and Mastra Code load them from `.agents/skills/`. Claude Code loads the repo skills through symlinks in `.claude/skills/` and gets `unikraft` from the `unikraft@ai-standards` plugin. The guardrails below apply whether or not a skill is loaded.
 
 ## Layout
 
