@@ -245,7 +245,7 @@ The postgres image compiles PostgreSQL from source for x86_64; on an Apple Silic
 ./scripts/deploy.sh           # postgres → migrate → openfga → api
 # or step by step:
 ./scripts/deploy.sh postgres  # private, 512MiB, volume demo-fga-pgdata, scale-to-zero off
-./scripts/deploy.sh migrate   # one-off `openfga migrate` instance on the private network, then deleted
+./scripts/deploy.sh migrate   # one-off `openfga migrate` instance on the private network (retried, must exit 0), then deleted
 ./scripts/deploy.sh openfga   # private, 512MiB, --scale-to-zero policy=off
 ./scripts/deploy.sh api       # public HTTPS, 512MiB, scale-to-zero on (5s cooldown)
 ```
@@ -259,7 +259,7 @@ unikraft run --metro fra -n demo-fga-postgres --image <org>/demo-fga-postgres:la
   -e POSTGRES_USER=openfga -e POSTGRES_DB=openfga -e POSTGRES_PASSWORD=... -e PGDATA=/volume/postgres
 
 unikraft run --metro fra -n demo-fga-migrate --image <org>/demo-fga-openfga:latest \
-  -m 256MiB --restart on-failure --args "/usr/bin/openfga migrate" \
+  -m 256MiB --restart never --args "/usr/bin/openfga migrate" \
   -e OPENFGA_DATASTORE_ENGINE=postgres \
   -e OPENFGA_DATASTORE_URI=postgres://openfga:...@demo-fga-postgres.internal:5432/openfga?sslmode=disable
 
