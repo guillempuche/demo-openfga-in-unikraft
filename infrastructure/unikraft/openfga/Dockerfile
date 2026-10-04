@@ -1,9 +1,11 @@
-ARG GO_VERSION=1.24.0
+# Go toolchain required by OpenFGA v1.21.0 (go.mod: go 1.25.7, toolchain go1.26.8).
+ARG GO_VERSION=1.26.8
 # Compile on the build host's native platform and cross-compile to the target
 # architecture; much faster than building under amd64 emulation.
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS build
 
-ARG OPENFGA_VERSION=v1.11.0
+# Keep in sync with versions.env (checked by scripts/check-versions.sh).
+ARG OPENFGA_VERSION=v1.21.0
 ARG TARGETARCH=amd64
 
 # Simple static build for Unikraft base-compat runtime
@@ -26,11 +28,16 @@ RUN --mount=type=cache,target=/root/go/pkg/mod \
     set -xe; \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build \
-      -ldflags="-s -w" \
+      -ldflags="-s -w -X github.com/openfga/openfga/internal/build.Version=${OPENFGA_VERSION} -X github.com/openfga/openfga/internal/build.Commit=$(git rev-parse --short HEAD)" \
       -tags netgo \
       -o /usr/bin/openfga ./cmd/openfga
+
+# OpenFGA serves HTTP-to-gRPC traffic over a unix socket in /tmp when it can
+# (falling back to TCP with a warning); scratch has no /tmp, so create one.
+RUN mkdir -p /rootfs/tmp && chmod 1777 /rootfs/tmp
 
 FROM scratch
 
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /usr/bin/openfga /usr/bin/openfga
+COPY --from=build /rootfs/ /

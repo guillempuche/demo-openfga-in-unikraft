@@ -10,7 +10,4 @@
 	# CORS headers are injected by the OpenFGA server (see OPENFGA_HTTP_CORS_* env vars)
 }
 
-# OpenFGA Playground
-:8082 {
-	reverse_proxy openfga:3000
-}
+# The Playground is a separate compose profile (see docker-compose.yaml).

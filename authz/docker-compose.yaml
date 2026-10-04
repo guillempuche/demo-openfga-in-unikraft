@@ -24,7 +24,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    image: openfga/openfga:v1.11.0
+    image: openfga/openfga:v1.21.0
     command: migrate
     environment: # Full list https://github.com/openfga/openfga/blob/main/cmd/migrate/flags.go
       - OPENFGA_DATASTORE_ENGINE=postgres
@@ -37,7 +37,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    image: openfga/openfga:v1.11.0
+    image: openfga/openfga:v1.21.0
     environment: # Full list https://github.com/openfga/openfga/blob/main/cmd/run/flags.go, https://github.com/openfga/openfga/blob/main/.config-schema.json
       - OPENFGA_AUTHN_METHOD=preshared
       - OPENFGA_AUTHN_PRESHARED_KEYS=${OPENFGA_AUTHN_PRESHARED_KEYS}
@@ -48,9 +48,33 @@ services:
       - OPENFGA_HTTP_TLS_ENABLED=false
       - OPENFGA_LOG_FORMAT=json
       - OPENFGA_LOG_LEVEL=debug
-      - OPENFGA_PLAYGROUND_ENABLED=true
-      - OPENFGA_PLAYGROUND_PORT=3000
     command: run
+    networks:
+      - demo_authz_network
+
+  # Optional: `docker compose --profile playground up -d`. Since OpenFGA v1.14
+  # the (deprecated) Playground only works with authn method `none`, so it runs
+  # as a second OpenFGA on the same database, without authentication, reachable
+  # from this machine only. The Playground page calls the HTTP address of its
+  # own process, so container and host ports must match (8090).
+  openfga-playground:
+    profiles: [playground]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    image: openfga/openfga:v1.21.0
+    environment:
+      - OPENFGA_AUTHN_METHOD=none
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      - OPENFGA_DATASTORE_URI=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+      - OPENFGA_HTTP_ADDR=0.0.0.0:8090
+      - OPENFGA_PLAYGROUND_ENABLED=true
+      - OPENFGA_PLAYGROUND_ADDR=0.0.0.0:3000
+      - OPENFGA_LOG_FORMAT=json
+    command: run
+    ports:
+      - "127.0.0.1:8090:8090"  # unauthenticated API used by the Playground page
+      - "127.0.0.1:8082:3000"  # Playground: http://localhost:8082/playground
     networks:
       - demo_authz_network
 
@@ -60,8 +84,7 @@ services:
       openfga:
         condition: service_started
     ports:
-      - "8080:8080"  # OpenFGA API
-      - "8082:8082"  # OpenFGA Playground
+      - "8080:8080"  # OpenFGA API (preshared key)
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
