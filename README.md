@@ -63,10 +63,14 @@ cp authz/.env.example authz/.env
 docker compose -f authz/docker-compose.yaml --env-file authz/.env up -d
 ```
 
-This starts PostgreSQL, runs OpenFGA's migrations, and serves OpenFGA through Caddy:
+This starts PostgreSQL, runs OpenFGA's migrations, and serves OpenFGA v1.21.0 through Caddy at `http://localhost:8080` (preshared key `dev-key-1`).
 
-- OpenFGA HTTP API: `http://localhost:8080` (preshared key `dev-key-1`)
-- Playground: `http://localhost:8082/playground`
+The OpenFGA Playground is deprecated and, since v1.14, refuses to run with preshared-key authentication. To use it locally, start the optional profile: a second OpenFGA on the same database, without authentication, bound to this machine only.
+
+```bash
+docker compose -f authz/docker-compose.yaml --env-file authz/.env --profile playground up -d
+# Playground: http://localhost:8082/playground (its API: http://localhost:8090, no key)
+```
 
 Create a store, load the model and the synthetic tuples, and check a permission:
 
@@ -295,13 +299,14 @@ To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<n
 
 ## Repository layout
 
-- `authz/` – local Docker Compose stack (PostgreSQL, OpenFGA, Caddy, Playground).
+- `authz/` – local Docker Compose stack (PostgreSQL, OpenFGA, Caddy; optional Playground profile).
 - `authz/models/` – FGA modules and their tests.
 - `authz/seed/tuples.yaml` – synthetic tuples for the demo store.
 - `api/` – public demo API (Node.js 24, TypeScript run natively), its tests, Kraftfile and Dockerfile.
 - `infrastructure/unikraft/openfga/` – OpenFGA Kraftfile and Dockerfile (static Go build).
 - `infrastructure/unikraft/postgres/` – PostgreSQL Kraftfile and rootfs, from the [Unikraft examples](https://github.com/unikraft-cloud/examples/tree/main/postgres) (see [NOTICE](NOTICE)).
 - `scripts/` – `unikraft` CLI wrappers: build, deploy, tunnel, seed, test-remote, verify, cleanup.
+- `versions.env` – pinned OpenFGA and fga CLI versions; `scripts/check-versions.sh` (in CI) checks every other pin against it.
 - `docs/RESULTS.md` – measured results on Unikraft Cloud. `docs/1-*.md` and `docs/2-*.md` are historical notes from the legacy `kraft cloud` setup.
 - `AGENTS.md` – context for AI coding agents.
 

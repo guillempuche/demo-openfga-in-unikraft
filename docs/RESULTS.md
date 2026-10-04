@@ -1,6 +1,6 @@
 # Results: private OpenFGA + public API on Unikraft Cloud
 
-Run on 2026-10-04. Org `kybrion` (profile pinned via `UNIKRAFT_PROFILE`), metro `fra`, `unikraft` CLI 0.5.2, OpenFGA v1.11.0, PostgreSQL 16.4. Everything (database, OpenFGA, API) runs on Unikraft Cloud; no other hosting provider is involved. Synthetic data only (`authz/seed/tuples.yaml`).
+Run on 2026-10-04. Org `kybrion` (profile pinned via `UNIKRAFT_PROFILE`), metro `fra`, `unikraft` CLI 0.5.2, PostgreSQL 16.4. Sections 1–6 and the re-verification ran on OpenFGA v1.11.0; the last run section is the upgrade to v1.21.0. Everything (database, OpenFGA, API) runs on Unikraft Cloud; no other hosting provider is involved. Synthetic data only (`authz/seed/tuples.yaml`).
 
 ## Summary
 
@@ -139,6 +139,22 @@ All three images rebuilt from `infrastructure/unikraft/` (after the folder renam
 - The rebuilt API runs the restructured module (`createApp`, listen only when run directly) correctly in the unikernel.
 - The first-deploy `verify.sh` run happened while a tunnel was open; listing public domains surfaced the relay's public FQDN (see [section 5](#5-model-tests-through-the-tunnel)). That version of `verify.sh` only listed it and passed; it now fails while a relay is public. The after-redeploy run had no tunnel open.
 - The Postgres rebuild was fast because the WAL cap lives in the Kraftfile `cmd`, not the Dockerfile: a later local rebuild showed 41 `CACHED` steps and took 19 s. A cold build still compiles PostgreSQL from source (11.5 min).
+
+## Upgrade to OpenFGA v1.21.0 (2026-10-04)
+
+The unikernel image was rebuilt from v1.21.0 (Go 1.26.8, version stamped into the binary, `/tmp` added to the rootfs) and deployed onto the existing `demo-fga-pgdata` volume, which v1.11.0 had written. fga CLI 0.8.1 (embedded OpenFGA v1.21.0) ran the model tests.
+
+| Check | Result |
+| --- | --- |
+| `deploy.sh` | 22 s; the migration found schema version 6 (unchanged since v1.11), exit 0, no changes |
+| Data | Store `demo-fga` kept its ID (`01M43VXF…`), model and tuples |
+| OpenFGA logs | `build.version: v1.21.0`; only warnings are the expected "TLS is disabled" ones (no unix-socket fallback) |
+| `verify.sh` | all checks passed; `/bench` p50 1.286 / 1.032 / 1.080 ms |
+| `test-remote.sh` (fga 0.8.1) | 10/10 tests, 31/31 checks |
+| No key through the tunnel | `401` |
+| Local stack (compose, v1.21.0) | migrated an existing v1.11 database with no changes; quick start, model tests and the `playground` profile work |
+
+Breaking change handled: since v1.14 the Playground refuses to start with preshared-key authentication, so the local stack runs it as an optional unauthenticated profile on 127.0.0.1 only.
 
 ## Build notes
 

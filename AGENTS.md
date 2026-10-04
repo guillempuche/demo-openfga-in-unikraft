@@ -10,14 +10,14 @@ Example of OpenFGA (ReBAC, fine-grained authorization) running on Unikraft Cloud
 
 | | Local (`authz/docker-compose.yaml`) | Unikraft Cloud (`scripts/`) |
 | --- | --- | --- |
-| OpenFGA | v1.11.0, `http://localhost:8080` (via Caddy), key `dev-key-1` | v1.11.0, `demo-fga-openfga.internal:8080`, no public port; tunnel: `localhost:18080` |
-| Playground | `http://localhost:8082/playground` | disabled |
+| OpenFGA | v1.21.0, `http://localhost:8080` (via Caddy), key `dev-key-1` | v1.21.0, `demo-fga-openfga.internal:8080`, no public port; tunnel: `localhost:18080` |
+| Playground | optional `--profile playground`: `http://localhost:8082/playground`, its API `localhost:8090` without auth | disabled |
 | PostgreSQL | 17.2, host port 5435 | 16.4, `demo-fga-postgres.internal:5432`, volume `demo-fga-pgdata` (512MiB) |
 | API | `cd api && FGA_KEY=dev-key-1 FGA_API_URL=http://localhost:8080 PORT=3001 npm start` | `demo-fga-api`, public HTTPS 443→8080: `/health`, `/check`, `/bench` |
 | Config | `authz/.env` (from `authz/.env.example`) | root `.env` (from `.env.example`): `UNIKRAFT_PROFILE`, `FGA_KEY`, `POSTGRES_PASSWORD`, optional `OPENFGA_DATASTORE_URI` |
 | Store | create with `fga store create` (no fixed ID) | `demo-fga`, created by `scripts/seed.sh`; the API finds it by name |
 
-Tooling: OpenFGA CLI `fga`, `unikraft` CLI 0.5.x (not the deprecated `kraft cloud`), Node.js 24 (runs `.ts` natively), Docker with BuildKit, jq. `nix develop` provides all of them except Docker.
+Versions are pinned in `versions.env` (OpenFGA v1.21.0, fga CLI 0.8.1); `scripts/check-versions.sh` fails CI if the Dockerfile, compose file, CI or `docs/repos` disagree. Upgrade them together. Tooling: OpenFGA CLI `fga` (0.8.1, which embeds the same OpenFGA version), `unikraft` CLI 0.5.x (not the deprecated `kraft cloud`), Node.js 24 (runs `.ts` natively), Docker with BuildKit, jq. `nix develop` provides all of them except Docker.
 
 ## Skills
 
@@ -62,6 +62,7 @@ Checks to run after changes (all run in CI):
 fga model test --tests 'authz/models/*.fga.yaml'   # expect Tests 10/10, Checks 31/31
 cd api && npm ci && npm run typecheck && npm test   # node:test against a stub OpenFGA
 bash -n scripts/*.sh scripts/env.sh
+./scripts/check-versions.sh
 ```
 
 `fga model test --tests` takes one path or glob. Listing two files silently tests only the first.
