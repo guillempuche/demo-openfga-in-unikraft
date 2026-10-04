@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "ai-standards": {
+      "source": {
+        "source": "github",
+        "repo": "guillempuche/ai-standards"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "unikraft@ai-standards": true
+  }
+}

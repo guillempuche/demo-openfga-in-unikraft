@@ -15,6 +15,6 @@ Which agent finds what:
 | Codex | `.agents/skills/` | all three |
 | OpenCode | `.opencode/skills/`, `.claude/skills/`, `.agents/skills/` | all three |
 | Mastra Code | `.mastracode/skills/`, `.claude/skills/`, `.agents/skills/` | all three |
-| Claude Code | `.claude/skills/` (symlinks to the repo skills here) and installed plugins | `git-commit-messages`, `write-comments`; `unikraft` comes from the plugin (`/plugin marketplace add guillempuche/ai-standards`, then `/plugin install unikraft@ai-standards`) |
+| Claude Code | `.claude/skills/` (symlinks to the repo skills here) and installed plugins | `git-commit-messages`, `write-comments`; `unikraft` comes from the `unikraft@ai-standards` plugin, which `.claude/settings.json` registers and enables (Claude Code offers to install it when you trust the folder; manually: `/plugin marketplace add guillempuche/ai-standards`, then `/plugin install unikraft@ai-standards`) |
 
 `unikraft` is deliberately not linked into `.claude/skills/`, so Claude Code users with the plugin don't get it twice.
