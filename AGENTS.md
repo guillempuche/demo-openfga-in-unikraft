@@ -33,7 +33,7 @@ Codex, OpenCode and Mastra Code load them from `.agents/skills/`. Claude Code lo
 
 ```
 authz/                      local stack (compose, Caddyfile, .env.example) and FGA models
-authz/models/               fga.mod, projects.fga, tasks.fga, *.fga.yaml tests
+authz/models/               fga.mod + modules (core, conditions, projects, tasks); one *.fga.yaml test file per feature
 authz/seed/tuples.yaml      synthetic tuples for the demo store
 api/                        server.ts, server.test.ts, Kraftfile, Dockerfile
 infrastructure/unikraft/    openfga/ and postgres/ Kraftfiles and Dockerfiles
@@ -59,7 +59,8 @@ fga query check user:alice can_edit project:roadmap     # allowed: true
 Checks to run after changes (all run in CI):
 
 ```bash
-fga model test --tests 'authz/models/*.fga.yaml'   # expect Tests 10/10, Checks 31/31
+fga model test --tests 'authz/models/*.fga.yaml'   # expect Tests 28/28, Checks 190/190, ListObjects 11/11, ListUsers 16/16
+python3 scripts/check-model-coverage.py          # every relation true+false, every type listed, 0 surviving mutants
 cd api && npm ci && npm run typecheck && npm test   # node:test against a stub OpenFGA
 bash -n scripts/*.sh scripts/env.sh
 ./scripts/check-versions.sh
@@ -95,7 +96,7 @@ Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. 
 - Commit messages: `type(scope): subject` in the imperative, with a bulleted past-tense body; types `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `cicd`, `ai`; scopes `authz`, `api`, `infra`, `nix`. Full rules: [.agents/skills/git-commit-messages/SKILL.md](.agents/skills/git-commit-messages/SKILL.md).
 - Shell scripts: `#!/usr/bin/env bash`, source `scripts/env.sh`, pass `shellcheck -x -S warning`.
 - The API has no runtime dependencies (only `node:` modules and `fetch`); keep TypeScript to erasable syntax (`erasableSyntaxOnly`).
-- Each `.fga` module has a `.fga.yaml` test file beside it, covering positive, negative and inherited cases.
+- Model tests live next to `fga.mod` (the CLI refuses model files outside the test file's directory), one file per feature, marked `# feature:` in both the `.fga` and `.fga.yaml` files. Any model change must keep `scripts/check-model-coverage.py` green: add tests rather than exemptions; an exemption in `authz/models/coverage-exemptions.txt` needs a reason.
 - `docs/repos/` is reference material for reading OpenFGA internals: never edit it; update it with `git subtree pull --squash` (see `docs/repos/README.md`). The `AGENTS.md`, `CLAUDE.md` and Copilot instruction files inside it are upstream contributor rules and don't apply to this repo. It is listed in `.ignore`, so `rg`/search skip it by default; search it on purpose with an explicit path (`rg ListUsers docs/repos/openfga`).
 
 ## References

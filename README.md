@@ -13,7 +13,7 @@ Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grain
 | Same, OpenFGA check cache off (1 Postgres round trip) | p50 1.5–1.8 ms |
 | Exposure | No service on OpenFGA or Postgres; ports 8080/8081/3000/2112/5432 don't answer; no key → `401` |
 | Redeploy (delete + run, 32 s) | Every private IP changed and was reused by another instance; `.internal` names kept working with no config change |
-| `fga model test` against the deployed store | 10/10 tests, 31/31 checks |
+| `fga model test` against the deployed server (v1.21.0, fresh store) | 28/28 tests: 190 checks, 11 ListObjects, 16 ListUsers |
 | Memory | OpenFGA 17.6 MiB RSS, API 26 MiB RSS (512 MiB allocated each) |
 
 ## Contents
@@ -177,7 +177,7 @@ unikraft instances get demo-fga-openfga -f name,state,networks,service
 ```bash
 ./scripts/tunnel.sh           # terminal 1: localhost:18080 -> demo-fga-openfga:8080
 ./scripts/seed.sh             # terminal 2: create store "demo-fga", write model + synthetic tuples
-./scripts/test-remote.sh      # fga model test against the deployed store
+./scripts/test-remote.sh      # fga model test against the deployed server, on a fresh store
 ```
 
 ### Verify
@@ -233,7 +233,7 @@ unikraft images delete <org>/demo-fga-api:latest
 | Resource-name prefix guard | [`scripts/cleanup.sh`](scripts/cleanup.sh) | Cleanup refuses to touch anything outside `demo-fga-*` on a shared account. |
 | Two-step build: local OCI archive, then push | [`scripts/build.sh`](scripts/build.sh) | Avoids `failed to package kernel … connection reset by peer`. |
 | One-off migration instance on the private network | [`scripts/deploy.sh`](scripts/deploy.sh) | No database port exposed for migrations; the deploy stops unless it exits 0. |
-| `fga model test` against a deployed store | [`scripts/test-remote.sh`](scripts/test-remote.sh) | The same test files run locally and against production data paths. |
+| `fga model test` against a deployed store | [`scripts/test-remote.sh`](scripts/test-remote.sh) | The same test files run locally and against the deployed server's evaluation (the CLI sends test tuples as contextual tuples, so stored-tuple reads are covered by integration tests instead). |
 | Store lookup by name with a short cache | [`api/server.ts`](api/server.ts) | Recreated stores are picked up without restarting the API. |
 
 ## Gotchas
@@ -262,6 +262,10 @@ So the secret is on the command line. Describe the instance in a 0600 YAML file 
 
 If a test file has `model_file`, the CLI runs an embedded OpenFGA and never contacts the server. Remove that line and pass `--store-id` to test a deployed store ([`scripts/test-remote.sh`](scripts/test-remote.sh)).
 
+### `ListObjects` fails when a condition is missing context
+
+If any grant reachable from the query has a condition and the request doesn't pass that condition's parameters, `ListObjects` returns an error instead of a shorter list. Pass `context` (here `current_time`) whenever conditional grants are in play.
+
 ### `fga model test --tests a.yaml b.yaml` runs only the first file
 
 `--tests` takes one path or glob: `fga model test --tests 'authz/models/*.fga.yaml'`.
@@ -282,20 +286,40 @@ Each run creates a new service with a random FQDN. For a stable name, create the
 
 The modules live in `authz/models/` and run unchanged locally and on Unikraft:
 
+A project-management domain, org → team → folder → project → list → task, split into modules:
+
 - `fga.mod`: manifest listing the modules.
-- `projects.fga`: users, projects and lists with hierarchical sharing.
-- `tasks.fga`: tasks that inherit rights from their parent lists.
+- `core.fga`: users, organizations (admins, members, blocked users) and nested teams.
+- `conditions.fga`: the CEL conditions (expiring grants, office network, allowed regions, plan features).
+- `projects.fga`: nested folders, projects (roles, public access, blocking, sharing) and lists.
+- `tasks.fga`: tasks, plus project permissions added with `extend type`.
+
+Each feature has its own test file next to the manifest, all testing the same model:
+
+| Feature | Where in the model | Tests |
+| --- | --- | --- |
+| Direct relations, computed relations, inheritance (`from`) | `project`, `list`, `task` | [projects.fga.yaml](authz/models/projects.fga.yaml), [tasks.fga.yaml](authz/models/tasks.fga.yaml) |
+| Group membership (`team#member`) and nested teams | `team#member`, folder/project roles | [core.fga.yaml](authz/models/core.fga.yaml) |
+| Recursion (folders inside folders) | `folder#parent` | [nesting.fga.yaml](authz/models/nesting.fga.yaml) |
+| Exclusion (`but not`) with grouping | `project#can_edit`, `project#can_view` | [exclusion.fga.yaml](authz/models/exclusion.fga.yaml) |
+| Intersection (`and`) | `project#can_share`, `project#can_export` | [intersection.fga.yaml](authz/models/intersection.fga.yaml) |
+| Public access (`user:*`), permanent and expiring | `project#viewer` | [public-access.fga.yaml](authz/models/public-access.fga.yaml) |
+| Conditions: timestamp, duration, ipaddress, `list<string>`, `map<string>`; on users, usersets and wildcards; mixed with plain grants | `conditions.fga` | [conditions.fga.yaml](authz/models/conditions.fga.yaml) |
+| Modules and `extend type` | `fga.mod`, `tasks.fga` | [tasks.fga.yaml](authz/models/tasks.fga.yaml) |
+
+`scripts/check-model-coverage.py` (run in CI) fails unless every relation has a passing allowed and denied check, every type has `list_objects` and `list_users` assertions, and every single-rule break of the model (a "mutant": a dropped `or` branch, `and` turned into `or`, a dropped `but not`, a dropped allowed type, a negated condition) makes a test fail. It caught a real bug while the model was written: lists inherited project *membership*, which let a user blocked on a project still view its lists.
 
 With `FGA_API_URL`, `FGA_API_TOKEN` and `FGA_STORE_ID` exported (see [Quick start](#quick-start-local)):
 
 ```bash
 fga model write --file authz/models/fga.mod     # new authorization_model_id per write
 fga model get                                   # the combined model
-fga model test --tests 'authz/models/*.fga.yaml'   # expect Tests 10/10, Checks 31/31
+fga model test --tests 'authz/models/*.fga.yaml'   # expect Tests 28/28, Checks 190/190, ListObjects 11/11, ListUsers 16/16
+python3 scripts/check-model-coverage.py          # coverage gate + mutation testing
 fga model transform --file authz/models/fga.mod > model.json   # combined model as JSON
 ```
 
-To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<name>.fga.yaml` tests beside it, and write the model again.
+To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<name>.fga.yaml` tests beside it (the CLI refuses model files outside the test file's directory), run the coverage gate, and write the model again.
 
 ## Repository layout
 
@@ -314,6 +338,7 @@ To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<n
 
 ```bash
 fga model test --tests 'authz/models/*.fga.yaml'
+python3 scripts/check-model-coverage.py
 cd api && npm ci && npm run typecheck && npm test
 ```
 

@@ -156,6 +156,17 @@ The unikernel image was rebuilt from v1.21.0 (Go 1.26.8, version stamped into th
 
 Breaking change handled: since v1.14 the Playground refuses to start with preshared-key authentication, so the local stack runs it as an optional unauthenticated profile on 127.0.0.1 only.
 
+## Richer model and coverage gate (2026-10-04)
+
+The model grew to org → team → folder → project → list → task (41 relations, 4 conditions) with one test file per OpenFGA modeling feature. `scripts/check-model-coverage.py` checks every relation for passing allowed and denied checks and runs 79 single-rule mutants of the model; all 79 are caught. While writing it, mutation testing exposed a real exclusion bypass: lists inherited project *membership*, so a user blocked on a project could still view its lists; lists now inherit `can_view`/`can_edit` from the project.
+
+| Run | Result |
+| --- | --- |
+| Local, fga 0.8.1 (embedded v1.21.0) | 28/28 tests: 190 checks, 11 ListObjects, 16 ListUsers |
+| Local stack (compose, v1.21.0), `test-remote.sh` on a fresh store | same |
+| Unikraft Cloud (v1.21.0) through the tunnel, fresh store | same |
+| `verify.sh` after re-seeding `demo-fga` with the new model | all checks passed; `/bench` p50 1.107–1.368 ms |
+
 ## Build notes
 
 - Building OpenFGA from its Kraftfile failed with `dockerfile context does not exist` until the `rootfs` path was fixed.
