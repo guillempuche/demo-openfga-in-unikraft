@@ -1,0 +1,10 @@
+# Ignore IDE-specific directories
+.idea/
+.vscode/
+*.sublime-workspace
+# Vim temp files
+*~
+.dccache
+
+.DS_Store
+.env
