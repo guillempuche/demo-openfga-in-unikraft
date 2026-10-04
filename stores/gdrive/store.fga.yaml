@@ -1,0 +1,114 @@
+# Documentation: https://openfga.dev/docs/modeling/advanced/gdrive
+# FGA Playground: https://play.fga.dev/sandbox/?store=gdrive
+name: Google Drive
+model_file: model.fga
+tuples:
+  # Anne is a member of the Contoso group
+  - user: user:anne
+    relation: member
+    object: group:contoso
+  # Beth is a member of the Contoso group
+  - user: user:beth
+    relation: member
+    object: group:contoso
+  # Charles is a member of the Fabrikam group
+  - user: user:charles
+    relation: member
+    object: group:fabrikam
+  # The "Product 2021" folder contains the "Public Roadmap" document
+  - user: folder:product-2021
+    relation: parent
+    object: doc:public-roadmap
+  # The "Product 2021" folder contains the "2021 Roadmap" document
+  - user: folder:product-2021
+    relation: parent
+    object: doc:2021-roadmap
+  # Members of the Fabrikam group are viewers of the "Product 2021" folder
+  - user: group:fabrikam#member
+    relation: viewer
+    object: folder:product-2021
+  # Anne is an owner of the "Product 2021" folder
+  - user: user:anne
+    relation: owner
+    object: folder:product-2021
+  # Beth is a viewer of the "2021 Roadmap" document
+  - user: user:beth
+    relation: viewer
+    object: doc:2021-roadmap
+  # Every user is a viewer of the "Public Roadmap" document
+  - user: user:*
+    relation: viewer
+    object: doc:public-roadmap
+tests:
+  - name: Test user permissions for doc:2021-roadmap
+    check:
+      - user: user:anne
+        object: doc:2021-roadmap
+        assertions:
+          can_write: true
+      - user: user:beth
+        object: doc:2021-roadmap
+        assertions:
+          can_change_owner: false
+      - user: user:charles
+        object: doc:2021-roadmap
+        assertions:
+          can_read: true
+
+
+  - name: Test which documents can Anne read
+    list_objects:
+      - user: user:anne
+        type: doc
+        assertions:
+          can_read:
+            - doc:2021-roadmap
+            - doc:public-roadmap
+
+  - name: Test who can access doc:2021-roadmap
+    list_users:
+      - object: doc:2021-roadmap
+        user_filter:
+          - type: user
+        assertions:
+          can_read:
+            users: 
+              - user:anne
+              - user:beth
+              - user:charles
+
+  - name: Check if the right users have access to the right documents
+    list_users:
+      - object: doc:public-roadmap
+        user_filter: 
+          - type: user
+        assertions:
+          viewer:
+            users: 
+              - user:*
+
+      - object: doc:2021-roadmap
+        user_filter: 
+          - type: user
+        assertions:
+          viewer:
+            users: 
+              - user:beth
+
+      - object: folder:product-2021
+        user_filter: 
+          - type: group
+            relation: member
+        assertions:
+          viewer:
+            users: 
+              - group:fabrikam#member
+
+      - object: folder:product-2021
+        user_filter: 
+          - type: user
+        assertions:
+          viewer:
+            users: 
+              - user:anne
+              - user:charles

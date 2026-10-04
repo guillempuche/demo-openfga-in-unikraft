@@ -1,0 +1,51 @@
+name: Run Tests
+
+on:
+  merge_group:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: 'stable'
+
+      - name: Install the FGA CLI
+        run: go install github.com/openfga/cli/cmd/fga@latest
+
+      - name: Run the tests with the FGA CLI
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+      
+          testFiles=(./stores/*/*.fga.yaml)
+      
+          if [ ${#testFiles[@]} -eq 0 ]; then
+            echo "⚠️  No test files found in ./stores/*/store.fga.yaml, exiting."
+            exit 1
+          fi
+      
+          for tf in "${testFiles[@]}"; do
+            echo "⏳ Running tests in $tf"
+            fga model test --tests "$tf"
+            echo "✅ Passed $tf"
+            echo
+          done
