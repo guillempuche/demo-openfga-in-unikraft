@@ -1,82 +1,75 @@
-name: Tasks Module Tests
+# feature: extend type (tasks module adds project relations), tuple-to-userset into tasks
+name: Tasks — task roles and project permissions added by the tasks module
 
 model_file: ./fga.mod
 
 tuples:
-  # Project + list relationships
-  - user: user:alice
-    relation: owner
-    object: project:roadmap
-
-  - user: user:frank
-    relation: contributor
-    object: project:roadmap
-
-  - user: project:roadmap
-    relation: project
-    object: list:backlog
-
-  # Task links to list
-  - user: list:backlog
-    relation: list
-    object: task:spec
-
-  # Task roles
-  - user: user:alice
-    relation: owner
-    object: task:spec
-
-  - user: user:bob
-    relation: assignee
-    object: task:spec
-
-  - user: user:carol
-    relation: follower
-    object: task:spec
+  - { user: user:alice, relation: owner, object: project:roadmap }
+  - { user: user:frank, relation: contributor, object: project:roadmap }
+  - { user: user:carol, relation: viewer, object: project:roadmap }
+  - { user: project:roadmap, relation: project, object: list:backlog }
+  - { user: list:backlog, relation: list, object: task:spec }
+  - { user: user:tom, relation: owner, object: task:spec }
+  - { user: user:bob, relation: assignee, object: task:spec }
+  - { user: user:gina, relation: follower, object: task:spec }
 
 tests:
-  - name: Task owner full control
+  - name: Task owner has full control
     check:
+      - user: user:tom
+        object: task:spec
+        assertions: { owner: true, assignee: false, can_view: true, can_edit: true, can_complete: true, can_comment: true }
+      # alice owns the project, not the task: she edits through the list.
       - user: user:alice
         object: task:spec
-        assertions:
-          can_view: true
-          can_edit: true
-          can_complete: true
-          can_comment: true
+        assertions: { owner: false, can_edit: true, can_complete: false }
 
-  - name: Project contributor inherits edit via list
-    check:
-      - user: user:frank
-        object: task:spec
-        assertions:
-          can_view: true
-          can_edit: true
-          can_complete: false
-          can_comment: true
-
-  - name: Assignee can complete task
+  - name: Assignee completes, follower reads and comments
     check:
       - user: user:bob
         object: task:spec
-        assertions:
-          can_complete: true
-          can_edit: true
+        assertions: { assignee: true, follower: false, can_view: true, can_comment: true, can_complete: true, can_edit: true }
+      - user: user:gina
+        object: task:spec
+        assertions: { follower: true, can_view: true, can_comment: true, can_edit: false, can_complete: false }
 
-  - name: Follower read/comment only
+  - name: Project contributors edit tasks through the list, viewers only read
     check:
+      - user: user:frank
+        object: task:spec
+        assertions: { owner: false, can_view: true, can_edit: true, can_complete: false, can_comment: true }
       - user: user:carol
         object: task:spec
+        assertions: { can_view: true, can_edit: false, can_comment: false }
+      - user: list:backlog
+        object: task:spec
+        assertions: { list: true }
+      - user: list:other
+        object: task:spec
+        assertions: { list: false }
+    list_objects:
+      - user: user:frank
+        type: task
         assertions:
-          can_view: true
-          can_comment: true
-          can_edit: false
-          can_complete: false
+          can_edit: [task:spec]
+    list_users:
+      - object: task:spec
+        user_filter: [{ type: user }]
+        assertions:
+          can_complete: { users: [user:tom, user:bob] }
+          can_edit: { users: [user:tom, user:bob, user:alice, user:frank] }
 
-  - name: Unrelated user denied
+  - name: The tasks module extends project with can_create_task
+    check:
+      - user: user:frank
+        object: project:roadmap
+        assertions: { can_create_task: true }
+      - user: user:carol
+        object: project:roadmap
+        assertions: { can_create_task: false }
+
+  - name: Outsiders get nothing
     check:
       - user: user:dave
         object: task:spec
-        assertions:
-          can_view: false
-          can_edit: false
+        assertions: { can_view: false, can_edit: false, can_comment: false, can_complete: false }

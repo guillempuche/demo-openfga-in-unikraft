@@ -1,0 +1,25 @@
+module conditions
+
+# Conditions (ABAC) are CEL expressions evaluated at check time. Parameters
+# come from the tuple's stored context and from the request's context.
+# Docs: https://openfga.dev/docs/modeling/conditions
+
+# feature: conditions (timestamp, duration) — access that expires.
+condition non_expired_grant(current_time: timestamp, grant_time: timestamp, grant_duration: duration) {
+  current_time < grant_time + grant_duration
+}
+
+# feature: conditions (ipaddress) — access only from the office network.
+condition from_office_network(user_ip: ipaddress, office_cidr: string) {
+  user_ip.in_cidr(office_cidr)
+}
+
+# feature: conditions (list<string>) — access only from allowed regions.
+condition in_allowed_regions(region: string, allowed_regions: list<string>) {
+  region in allowed_regions
+}
+
+# feature: conditions (map<string>) — a feature enabled by the org's plan.
+condition plan_allows(plan: map<string>, feature: string) {
+  feature in plan && plan[feature] == "enabled"
+}

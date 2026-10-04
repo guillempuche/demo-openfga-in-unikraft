@@ -1,0 +1,105 @@
+# feature: conditions (ABAC) — timestamp, duration, ipaddress, list<string>, map<string>;
+# on direct grants, on usersets, and mixed with unconditional grants of the same type
+name: Conditions — time, network, region and plan
+
+model_file: ./fga.mod
+
+tests:
+  - name: Some contributors may only edit from the office network (ipaddress)
+    tuples:
+      - { user: user:bob, relation: contributor, object: project:roadmap }
+      - user: user:remy
+        relation: contributor
+        object: project:roadmap
+        condition:
+          name: from_office_network
+          context: { office_cidr: "10.20.0.0/16" }
+    check:
+      - user: user:remy
+        object: project:roadmap
+        context: { user_ip: "10.20.4.7" }
+        assertions: { contributor: true, can_edit: true }
+      - user: user:remy
+        object: project:roadmap
+        context: { user_ip: "203.0.113.9" }
+        assertions: { contributor: false, can_edit: false }
+      # bob's grant has no condition, so no context is needed.
+      - user: user:bob
+        object: project:roadmap
+        assertions: { contributor: true }
+
+  - name: A team can get temporary read access to a folder (timestamp, duration, on a userset)
+    tuples:
+      - { user: user:ann, relation: member, object: team:auditors }
+      - user: team:auditors#member
+        relation: viewer
+        object: folder:finance
+        condition:
+          name: non_expired_grant
+          context: { grant_time: "2026-10-01T00:00:00Z", grant_duration: 72h }
+    check:
+      - user: user:ann
+        object: folder:finance
+        context: { current_time: "2026-10-02T09:00:00Z" }
+        assertions: { viewer: true }
+      - user: user:ann
+        object: folder:finance
+        context: { current_time: "2026-10-05T09:00:00Z" }
+        assertions: { viewer: false }
+    list_objects:
+      - user: user:ann
+        type: folder
+        context: { current_time: "2026-10-02T09:00:00Z" }
+        assertions:
+          viewer: [folder:finance]
+
+  - name: Contractors are org members only from allowed regions (list<string>)
+    tuples:
+      - user: user:carlos
+        relation: member
+        object: org:acme
+        condition:
+          name: in_allowed_regions
+          context: { allowed_regions: [eu-west, eu-central] }
+    check:
+      - user: user:carlos
+        object: org:acme
+        context: { region: eu-west }
+        assertions: { member: true }
+      - user: user:carlos
+        object: org:acme
+        context: { region: us-east }
+        assertions: { member: false }
+    list_users:
+      - object: org:acme
+        user_filter: [{ type: user }]
+        context: { region: eu-central }
+        assertions:
+          member: { users: [user:carlos] }
+
+  - name: Exporting needs a plan that enables it (map<string>, on a userset)
+    tuples:
+      - { user: org:acme, relation: org, object: project:roadmap }
+      - { user: user:alice, relation: owner, object: project:roadmap }
+      - { user: user:alice, relation: member, object: org:acme }
+      - { user: user:mark, relation: member, object: org:acme }
+      - user: org:acme#member
+        relation: exporter
+        object: project:roadmap
+        condition:
+          name: plan_allows
+          context: { feature: export }
+    check:
+      - user: user:alice
+        object: project:roadmap
+        context: { plan: { export: enabled } }
+        assertions: { exporter: true, can_export: true }
+      - user: user:alice
+        object: project:roadmap
+        context: { plan: { export: disabled } }
+        assertions: { exporter: false, can_export: false }
+      # mark is an org member (so an exporter) but can't view the project.
+      - user: user:mark
+        object: project:roadmap
+        context: { plan: { export: enabled } }
+        assertions: { exporter: true, can_export: false }

@@ -1,0 +1,57 @@
+# feature: public access (user:* wildcard), with a time-limited variant and exclusion
+name: Public access — user:* wildcards
+
+model_file: ./fga.mod
+
+tuples:
+  - { user: user:*, relation: viewer, object: project:handbook }
+  - { user: user:alice, relation: owner, object: project:handbook }
+  - { user: user:bea, relation: blocked, object: project:handbook }
+  - user: user:*
+    relation: viewer
+    object: project:launch
+    condition:
+      name: non_expired_grant
+      context:
+        grant_time: "2026-10-01T00:00:00Z"
+        grant_duration: 168h
+
+tests:
+  - name: Anyone can view a public project, except blocked users
+    check:
+      - user: user:zed
+        object: project:handbook
+        assertions: { viewer: true, can_view: true, can_edit: false }
+      - user: user:bea
+        object: project:handbook
+        assertions: { viewer: true, can_view: false }
+    list_objects:
+      # Context is required: project:launch's public grant has a condition, and
+      # ListObjects returns an error (not a smaller list) if a reachable
+      # condition is missing parameters.
+      - user: user:zed
+        type: project
+        context: { current_time: "2026-10-04T12:00:00Z" }
+        assertions:
+          can_view: [project:handbook, project:launch]
+      - user: user:zed
+        type: project
+        context: { current_time: "2026-10-09T00:00:00Z" }
+        assertions:
+          can_view: [project:handbook]
+    list_users:
+      - object: project:handbook
+        user_filter: [{ type: user }]
+        assertions:
+          viewer: { users: [user:*] }
+
+  - name: A public grant can expire
+    check:
+      - user: user:zed
+        object: project:launch
+        context: { current_time: "2026-10-04T12:00:00Z" }
+        assertions: { can_view: true }
+      - user: user:zed
+        object: project:launch
+        context: { current_time: "2026-10-09T00:00:00Z" }
+        assertions: { can_view: false }

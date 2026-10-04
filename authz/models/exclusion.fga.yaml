@@ -1,0 +1,56 @@
+# feature: exclusion (but not) with grouping
+name: Exclusion — blocked users lose access
+
+model_file: ./fga.mod
+
+tuples:
+  - { user: org:acme, relation: org, object: project:roadmap }
+  - { user: user:alice, relation: owner, object: project:roadmap }
+  - { user: user:alice, relation: blocked, object: project:roadmap }
+  - { user: user:bob, relation: contributor, object: project:roadmap }
+  - { user: user:bob, relation: blocked, object: org:acme }
+  - { user: user:carol, relation: viewer, object: project:roadmap }
+  - { user: project:roadmap, relation: project, object: list:backlog }
+
+tests:
+  - name: Blocked on the project removes edit and view, even for the owner
+    check:
+      - user: user:alice
+        object: project:roadmap
+        assertions:
+          owner: true
+          blocked: true
+          can_edit: false
+          can_view: false
+          # can_manage is not excluded: an owner can still manage (e.g. unblock).
+          can_manage: true
+
+  - name: Blocked in the org removes access to the org's projects
+    check:
+      - user: user:bob
+        object: project:roadmap
+        assertions: { contributor: true, blocked: false, can_edit: false, can_view: false }
+
+  - name: Blocks also apply to everything inherited from the project
+    check:
+      - user: user:alice
+        object: list:backlog
+        assertions: { can_view: false, can_edit: false }
+      - user: user:bob
+        object: list:backlog
+        assertions: { can_view: false }
+      - user: user:carol
+        object: list:backlog
+        assertions: { can_view: true }
+
+  - name: Not blocked keeps access
+    check:
+      - user: user:carol
+        object: project:roadmap
+        assertions: { blocked: false, can_view: true }
+    list_users:
+      - object: project:roadmap
+        user_filter: [{ type: user }]
+        assertions:
+          can_view: { users: [user:carol] }
+          blocked: { users: [user:alice] }

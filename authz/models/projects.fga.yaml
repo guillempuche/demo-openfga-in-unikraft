@@ -1,76 +1,130 @@
-name: Projects Module Tests
+# feature: direct relations, computed usersets, tuple-to-userset (lists inherit from projects)
+name: Projects — roles, org admins and lists
 
 model_file: ./fga.mod
 
 tuples:
-  # Project membership
-  - user: user:alice
-    relation: owner
-    object: project:roadmap
-
-  - user: user:bob
-    relation: contributor
-    object: project:roadmap
-
-  - user: user:carol
-    relation: viewer
-    object: project:roadmap
-
-  # List belongs to project
-  - user: project:roadmap
-    relation: project
-    object: list:backlog
-
-  # List-specific overrides
-  - user: user:erin
-    relation: collaborator
-    object: list:backlog
+  - { user: org:acme, relation: org, object: project:roadmap }
+  - { user: user:alice, relation: owner, object: project:roadmap }
+  - { user: user:alice, relation: member, object: org:acme }
+  - { user: user:bob, relation: contributor, object: project:roadmap }
+  - { user: user:carol, relation: viewer, object: project:roadmap }
+  - { user: user:olivia, relation: admin, object: org:acme }
+  - { user: project:roadmap, relation: project, object: list:backlog }
+  - { user: user:dana, relation: owner, object: list:backlog }
+  - { user: user:erin, relation: collaborator, object: list:backlog }
+  - { user: user:frank, relation: viewer, object: list:backlog }
+  - { user: team:design#member, relation: contributor, object: project:roadmap }
+  - { user: team:sales#member, relation: viewer, object: project:roadmap }
+  - { user: user:dee, relation: member, object: team:design }
+  - { user: user:sal, relation: member, object: team:sales }
 
 tests:
-  - name: Project owner full control
+  - name: Owner has full control
     check:
       - user: user:alice
         object: project:roadmap
         assertions:
           owner: true
+          contributor: false
+          viewer: false
+          member: true
           can_manage: true
           can_edit: true
+          can_view: true
           can_share: true
 
-  - name: Contributor inherits list access
+  - name: Contributor edits, viewer reads
+    check:
+      - user: user:bob
+        object: project:roadmap
+        assertions: { contributor: true, member: true, can_manage: false, can_edit: true, can_view: true }
+      - user: user:carol
+        object: project:roadmap
+        assertions: { viewer: true, member: true, can_edit: false, can_view: true }
+
+  - name: Project roles can be granted to whole teams
+    check:
+      - user: user:dee
+        object: project:roadmap
+        assertions: { contributor: true, can_edit: true }
+      - user: user:sal
+        object: project:roadmap
+        assertions: { contributor: false, viewer: true, can_view: true, can_edit: false }
+
+  - name: Org admins manage every project in the org without being members
+    check:
+      - user: user:olivia
+        object: project:roadmap
+        assertions: { owner: false, member: false, can_manage: true, can_edit: true, can_view: true }
+
+  - name: Outsiders get nothing
+    check:
+      - user: user:mallory
+        object: project:roadmap
+        assertions: { owner: false, member: false, can_manage: false, can_edit: false, can_view: false, can_share: false }
+
+  - name: Projects and lists point at their parents
+    check:
+      - user: org:acme
+        object: project:roadmap
+        assertions: { org: true }
+      - user: org:globex
+        object: project:roadmap
+        assertions: { org: false }
+      - user: project:roadmap
+        object: list:backlog
+        assertions: { project: true }
+      - user: project:other
+        object: list:backlog
+        assertions: { project: false }
+
+  - name: Lists inherit from their project
     check:
       - user: user:bob
         object: list:backlog
-        assertions:
-          can_edit: true
-          can_view: true
-          can_share: true
-
-  - name: Viewer cascades read-only permissions
-    check:
+        assertions: { member: false, can_edit: true, can_view: true, can_share: false }
       - user: user:carol
         object: list:backlog
-        assertions:
-          can_view: true
-          can_edit: false
-
-  - name: List collaborator without project membership
-    check:
+        assertions: { member: false, can_edit: false, can_view: true }
+      - user: user:olivia
+        object: list:backlog
+        assertions: { member: false, can_view: true }
+      - user: user:alice
+        object: list:backlog
+        assertions: { owner: false, can_share: true }
+      - user: user:dana
+        object: list:backlog
+        assertions: { owner: true, collaborator: false, member: true, can_edit: true, can_share: true }
       - user: user:erin
         object: list:backlog
-        assertions:
-          can_edit: true
-          can_view: true
-          can_share: true
+        assertions: { collaborator: true, viewer: false, member: true, can_edit: true, can_share: true }
+      - user: user:frank
+        object: list:backlog
+        assertions: { viewer: true, member: true, can_view: true, can_edit: false, can_share: false }
       - user: user:erin
         object: project:roadmap
+        assertions: { can_view: false }
+      - user: user:mallory
+        object: list:backlog
+        assertions: { member: false, can_view: false }
+    list_objects:
+      - user: user:bob
+        type: list
         assertions:
-          can_view: false
-
-  - name: Non member cannot access project
-    check:
-      - user: user:dave
-        object: project:roadmap
+          can_edit: [list:backlog]
+      - user: user:alice
+        type: project
         assertions:
-          can_view: false
-          can_edit: false
+          can_share: [project:roadmap]
+          can_view: [project:roadmap]
+    list_users:
+      - object: project:roadmap
+        user_filter: [{ type: user }]
+        assertions:
+          can_edit: { users: [user:alice, user:bob, user:olivia, user:dee] }
+          can_view: { users: [user:alice, user:bob, user:carol, user:olivia, user:dee, user:sal] }
+      - object: list:backlog
+        user_filter: [{ type: user }]
+        assertions:
+          can_edit: { users: [user:alice, user:bob, user:olivia, user:dee, user:dana, user:erin] }

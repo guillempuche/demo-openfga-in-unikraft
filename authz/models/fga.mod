@@ -1,18 +1,17 @@
-# Documentation at https://openfga.dev/docs/modeling/
-# Examples at https://github.com/openfga/sample-stores
-
-########################################################
-# General Check: A user {user} can perform action {action} to/on/in {object types} ... if {conditions}
+# Modular OpenFGA model for a project-management app:
+#   org → team → folder → project → list → task
 #
-# OpenGFA ReBAC Check: Does user {user} have relation {relation} with object {object}?
-########################################################
-
-# Modular model manifest. Load order doesn’t matter; relations are fully qualified.
-# Box ref: per-resource collaborations (file/folder/workflow).
-# Make ref: workflows (scenarios) live inside folders; team-like inheritance can be modeled via parents.
+# Each module owns one area; types can reference each other across modules,
+# and tasks.fga extends `project` without editing projects.fga.
+# Tests: one *.fga.yaml file per feature next to this manifest
+#   fga model test --tests 'authz/models/*.fga.yaml'
+#
+# Docs: https://openfga.dev/docs/modeling/modular-models
 
 schema: '1.2'
 
 contents:
+  - core.fga
+  - conditions.fga
   - projects.fga
   - tasks.fga

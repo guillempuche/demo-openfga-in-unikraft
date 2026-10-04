@@ -1,0 +1,30 @@
+# feature: intersection (and)
+name: Intersection — sharing needs edit rights and org membership
+
+model_file: ./fga.mod
+
+tuples:
+  - { user: org:acme, relation: org, object: project:roadmap }
+  - { user: user:alice, relation: owner, object: project:roadmap }
+  - { user: user:alice, relation: member, object: org:acme }
+  - { user: user:bob, relation: contributor, object: project:roadmap }
+  - { user: user:mark, relation: member, object: org:acme }
+  - { user: user:mark, relation: viewer, object: project:roadmap }
+
+tests:
+  - name: Both sides of the intersection are required
+    check:
+      - user: user:alice
+        object: project:roadmap
+        assertions: { can_edit: true, can_share: true }
+      - user: user:bob
+        object: project:roadmap
+        assertions: { can_edit: true, can_share: false }
+      - user: user:mark
+        object: project:roadmap
+        assertions: { can_edit: false, can_share: false }
+    list_users:
+      - object: project:roadmap
+        user_filter: [{ type: user }]
+        assertions:
+          can_share: { users: [user:alice] }

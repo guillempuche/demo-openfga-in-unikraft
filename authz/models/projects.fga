@@ -1,17 +1,37 @@
 module projects
 
-type user
+# Folders nest. Access granted on a folder flows down to its subfolders and to
+# the projects inside them.
+type folder
+  relations
+    define org: [org]
+    # feature: recursion (tuple-to-userset over the same type)
+    define parent: [folder]
+    define owner: [user, team#member]
+    define editor: [user, team#member] or owner or editor from parent
+    # feature: conditions on usersets — a team can get temporary read access.
+    define viewer: [user, team#member, team#member with non_expired_grant] or editor or viewer from parent
 
 type project
   relations
+    define org: [org]
+    define folder: [folder]
     define owner: [user]
-    define contributor: [user]
-    define viewer: [user]
+    # feature: conditions mixed with plain grants of the same type — some
+    # contributors may only edit from the office network.
+    define contributor: [user, team#member, user with from_office_network]
+    # feature: public access (user:*), permanently or for a limited time
+    define viewer: [user, team#member, user:*, user:* with non_expired_grant]
+    define blocked: [user]
     define member: owner or contributor or viewer
-    define can_manage: owner
-    define can_edit: owner or contributor
-    define can_view: member
-    define can_share: owner or contributor
+    define can_manage: owner or admin from org
+    # feature: exclusion (but not) with grouping — blocked on the project or
+    # in the org wins over every grant.
+    # (owners are covered by can_manage)
+    define can_edit: (contributor or editor from folder or can_manage) but not (blocked or blocked from org)
+    define can_view: (member or viewer from folder or can_manage) but not (blocked or blocked from org)
+    # feature: intersection (and) — sharing needs edit rights and org membership.
+    define can_share: can_edit and member from org
 
 type list
   relations
@@ -19,7 +39,9 @@ type list
     define owner: [user]
     define collaborator: [user]
     define viewer: [user]
-    define member: owner or collaborator or viewer or member from project
+    # Inherit through the project's permissions (can_*), not its raw roles, so
+    # a user blocked on the project is blocked on its lists too.
+    define member: owner or collaborator or viewer
     define can_edit: owner or collaborator or can_edit from project
     define can_view: member or can_view from project
     define can_share: owner or collaborator or can_share from project

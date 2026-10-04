@@ -1,0 +1,75 @@
+# feature: organizations, usersets (team#member), recursion (nested teams)
+name: Core — organizations and nested teams
+
+model_file: ./fga.mod
+
+tests:
+  - name: Org admins are members; blocked users are only blocked
+    tuples:
+      - { user: user:olivia, relation: admin, object: org:acme }
+      - { user: user:mark, relation: member, object: org:acme }
+      - { user: user:bea, relation: blocked, object: org:acme }
+    check:
+      - user: user:olivia
+        object: org:acme
+        assertions: { admin: true, member: true, blocked: false }
+      - user: user:mark
+        object: org:acme
+        assertions: { admin: false, member: true, blocked: false }
+      - user: user:bea
+        object: org:acme
+        assertions: { admin: false, member: false, blocked: true }
+    list_objects:
+      - user: user:mark
+        type: org
+        assertions:
+          member: [org:acme]
+          admin: []
+    list_users:
+      - object: org:acme
+        user_filter: [{ type: user }]
+        assertions:
+          member: { users: [user:olivia, user:mark] }
+          admin: { users: [user:olivia] }
+
+  - name: Members of a sub-team are members of the parent team
+    tuples:
+      - { user: org:acme, relation: org, object: team:platform }
+      - { user: user:tess, relation: maintainer, object: team:platform }
+      - { user: team:infra#member, relation: member, object: team:platform }
+      - { user: user:ian, relation: member, object: team:infra }
+      - { user: team:sre#member, relation: member, object: team:infra }
+      - { user: user:sam, relation: member, object: team:sre }
+    check:
+      - user: user:ian
+        object: team:platform
+        assertions: { member: true, maintainer: false }
+      - user: user:sam
+        object: team:platform
+        assertions: { member: true }
+      - user: user:tess
+        object: team:platform
+        assertions: { member: true, maintainer: true }
+      - user: user:mark
+        object: team:platform
+        assertions: { member: false }
+      - user: org:acme
+        object: team:platform
+        assertions: { org: true }
+      - user: org:globex
+        object: team:platform
+        assertions: { org: false }
+    list_objects:
+      - user: user:sam
+        type: team
+        assertions:
+          member: [team:sre, team:infra, team:platform]
+    list_users:
+      - object: team:platform
+        user_filter: [{ type: user }]
+        assertions:
+          member: { users: [user:tess, user:ian, user:sam] }
+      - object: team:platform
+        user_filter: [{ type: team, relation: member }]
+        assertions:
+          member: { users: [team:platform#member, team:infra#member, team:sre#member] }

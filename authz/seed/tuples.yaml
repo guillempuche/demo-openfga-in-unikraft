@@ -1,4 +1,4 @@
-# Synthetic demo data (same tuples as authz/models/projects.fga.yaml).
+# Synthetic demo data for the deployed demo-fga store (the API's checks use it).
 - user: user:alice
   relation: owner
   object: project:roadmap

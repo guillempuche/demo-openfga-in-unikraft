@@ -1,0 +1,94 @@
+# feature: recursion (folders inside folders), usersets as owners, inheritance into projects
+name: Nesting — folders, sub-folders and the projects inside them
+
+model_file: ./fga.mod
+
+tuples:
+  - { user: org:acme, relation: org, object: folder:eng }
+  - { user: folder:eng, relation: parent, object: folder:eng-api }
+  - { user: folder:eng-api, relation: parent, object: folder:eng-api-v2 }
+  - { user: folder:eng-api-v2, relation: folder, object: project:gateway }
+  - { user: team:platform#member, relation: owner, object: folder:eng }
+  - { user: user:tess, relation: member, object: team:platform }
+  - { user: user:ed, relation: editor, object: folder:eng-api }
+  - { user: user:vic, relation: viewer, object: folder:eng }
+  - { user: user:fay, relation: owner, object: folder:ops }
+  - { user: team:qa#member, relation: editor, object: folder:ops }
+  - { user: team:support#member, relation: viewer, object: folder:ops }
+  - { user: user:quinn, relation: member, object: team:qa }
+  - { user: user:sue, relation: member, object: team:support }
+
+tests:
+  - name: Grants on a folder reach every sub-folder and project below it
+    check:
+      - user: user:tess
+        object: folder:eng-api-v2
+        assertions: { owner: false, editor: true, viewer: true }
+      - user: user:tess
+        object: folder:eng
+        assertions: { owner: true }
+      - user: user:ed
+        object: folder:eng-api-v2
+        assertions: { editor: true }
+      - user: user:ed
+        object: folder:eng
+        assertions: { editor: false, viewer: false }
+      - user: user:vic
+        object: folder:eng-api-v2
+        assertions: { viewer: true, editor: false }
+      - user: user:tess
+        object: project:gateway
+        assertions: { can_edit: true, can_view: true }
+      - user: user:vic
+        object: project:gateway
+        assertions: { can_edit: false, can_view: true }
+      - user: user:mallory
+        object: folder:eng-api
+        assertions: { viewer: false }
+
+  - name: Folder roles can be granted to users or to whole teams
+    check:
+      - user: user:fay
+        object: folder:ops
+        assertions: { owner: true, editor: true }
+      - user: user:quinn
+        object: folder:ops
+        assertions: { owner: false, editor: true, viewer: true }
+      - user: user:sue
+        object: folder:ops
+        assertions: { editor: false, viewer: true }
+
+  - name: Folders point at their org, parent and projects
+    check:
+      - user: org:acme
+        object: folder:eng
+        assertions: { org: true }
+      - user: org:globex
+        object: folder:eng
+        assertions: { org: false }
+      - user: folder:eng
+        object: folder:eng-api
+        assertions: { parent: true }
+      - user: folder:eng-api
+        object: folder:eng
+        assertions: { parent: false }
+      - user: folder:eng-api-v2
+        object: project:gateway
+        assertions: { folder: true }
+      - user: folder:eng
+        object: project:gateway
+        assertions: { folder: false }
+    list_objects:
+      - user: user:ed
+        type: folder
+        assertions:
+          editor: [folder:eng-api, folder:eng-api-v2]
+    list_users:
+      - object: folder:eng-api
+        user_filter: [{ type: user }]
+        assertions:
+          editor: { users: [user:ed, user:tess] }
+      - object: project:gateway
+        user_filter: [{ type: user }]
+        assertions:
+          can_edit: { users: [user:ed, user:tess] }

@@ -1,0 +1,22 @@
+module core
+
+type user
+
+# An organization owns folders and projects. Admins manage everything in it,
+# and a user blocked at the org loses access to all of its projects.
+type org
+  relations
+    define admin: [user]
+    # feature: conditions (list<string>) — contractors are members only when
+    # they work from an allowed region.
+    define member: [user, user with in_allowed_regions] or admin
+    define blocked: [user]
+
+# Teams nest: a team can include every member of another team.
+type team
+  relations
+    define org: [org]
+    define maintainer: [user]
+    # feature: usersets (team#member) + recursion — members of a sub-team are
+    # members of the parent team.
+    define member: [user, team#member] or maintainer

@@ -1,5 +1,15 @@
 module tasks
 
+# feature: extend type — the tasks module adds project permissions without
+# editing projects.fga.
+extend type project
+  relations
+    define can_create_task: can_edit
+    # feature: conditions on usersets (map<string>) + intersection — exporting
+    # needs a plan that enables it and read access to the project.
+    define exporter: [org#member with plan_allows]
+    define can_export: exporter and can_view
+
 type task
   relations
     define list: [list]
