@@ -1,0 +1,15 @@
+.codecov.yml
+.github/CODEOWNERS
+.github/ISSUE_TEMPLATE/bug_report.yaml
+.github/ISSUE_TEMPLATE/config.yaml
+.github/ISSUE_TEMPLATE/feature_request.yaml
+.gitignore
+.npmrc
+CONTRIBUTING.md
+LICENSE
+VERSION.txt
+api.ts
+apiModel.ts
+constants/index.ts
+git_push.sh
+index.ts

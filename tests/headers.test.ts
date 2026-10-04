@@ -1,0 +1,682 @@
+import nock from "nock";
+import { describe, it } from "node:test";
+import { OpenFgaClient, UserClientConfigurationParams } from "../index";
+import { baseConfig } from "./helpers/default-config";
+import { CredentialsMethod } from "../credentials";
+import { expect } from "./helpers/expect";
+
+describe("Header Functionality Tests", () => {
+  const testConfig: UserClientConfigurationParams = {
+    ...baseConfig,
+    credentials: { method: CredentialsMethod.None }
+  };
+
+  describe("Default headers from client configuration", () => {
+    it("should send default headers from baseOptions on all requests", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-Default-Header": "default-value",
+            "X-Client-ID": "test-client-123",
+            "X-API-Version": "v1.0"
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function(this: nock.ReplyFnContext) {
+          // Verify all default headers are present
+          expect(this.req.headers["x-default-header"]).toBe("default-value");
+          expect(this.req.headers["x-client-id"]).toBe("test-client-123");
+          expect(this.req.headers["x-api-version"]).toBe("v1.0");
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      });
+    });
+
+    it("should send default headers on multiple different API calls", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-Persistent-Header": "should-appear-everywhere"
+          }
+        }
+      });
+
+      // Test check endpoint
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          expect(this.req.headers["x-persistent-header"]).toBe("should-appear-everywhere");
+          return [200, { allowed: true }];
+        });
+
+      // Test read endpoint
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/read`)
+        .reply(function() {
+          expect(this.req.headers["x-persistent-header"]).toBe("should-appear-everywhere");
+          return [200, { tuples: [] }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader", 
+        object: "document:test"
+      });
+
+      await fgaClient.read({});
+    });
+  });
+
+  describe("Per-request headers", () => {
+    it("should send per-request headers when specified", async () => {
+      const fgaClient = new OpenFgaClient(testConfig);
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          expect(this.req.headers["x-request-header"]).toBe("request-value");
+          expect(this.req.headers["x-correlation-id"]).toBe("abc-123-def");
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      }, {
+        headers: {
+          "X-Request-Header": "request-value",
+          "X-Correlation-ID": "abc-123-def"
+        }
+      });
+    });
+
+    it("should only send per-request headers on the specific request", async () => {
+      const fgaClient = new OpenFgaClient(testConfig);
+
+      // First request with headers
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          expect(this.req.headers["x-first-request"]).toBe("first-value");
+          expect(this.req.headers["x-second-request"]).toBeUndefined();
+          return [200, { allowed: true }];
+        });
+
+      // Second request with different headers
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          expect(this.req.headers["x-second-request"]).toBe("second-value");
+          expect(this.req.headers["x-first-request"]).toBeUndefined();
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      }, {
+        headers: {
+          "X-First-Request": "first-value"
+        }
+      });
+
+      await fgaClient.check({
+        user: "user:different",
+        relation: "writer",
+        object: "document:other"
+      }, {
+        headers: {
+          "X-Second-Request": "second-value"
+        }
+      });
+    });
+  });
+
+  describe("Default + per-request header combination", () => {
+    it("should send both default headers and per-request headers", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-Default-Header": "default-value",
+            "X-Client-Name": "test-client"
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          // Verify default headers are present
+          expect(this.req.headers["x-default-header"]).toBe("default-value");
+          expect(this.req.headers["x-client-name"]).toBe("test-client");
+          
+          // Verify per-request headers are present
+          expect(this.req.headers["x-request-id"]).toBe("req-123");
+          expect(this.req.headers["x-user-context"]).toBe("test-user");
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      }, {
+        headers: {
+          "X-Request-ID": "req-123",
+          "X-User-Context": "test-user"
+        }
+      });
+    });
+
+    it("should merge headers from multiple sources correctly", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-Source": "default",
+            "X-Default-Only": "only-in-default",
+            "X-Version": "1.0"
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          const headers = this.req.headers;
+          
+          // Default headers should be present
+          expect(headers["x-source"]).toBe("default");
+          expect(headers["x-default-only"]).toBe("only-in-default");
+          expect(headers["x-version"]).toBe("1.0");
+          
+          // Per-request headers should be present
+          expect(headers["x-request-only"]).toBe("only-in-request");
+          expect(headers["x-timestamp"]).toBe("2023-10-01");
+          
+          // SDK headers should be present
+          expect(headers["content-type"]).toBe("application/json");
+          expect(headers["user-agent"]).toMatch(/openfga-sdk/);
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      }, {
+        headers: {
+          "X-Request-Only": "only-in-request",
+          "X-Timestamp": "2023-10-01"
+        }
+      });
+    });
+  });
+
+  describe("Header precedence and override behavior", () => {
+    it("should allow per-request headers to override default headers", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-Environment": "default-env",
+            "X-Priority": "low",
+            "X-Shared-Header": "from-default"
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          // Per-request headers should override default headers
+          expect(this.req.headers["x-environment"]).toBe("production");
+          expect(this.req.headers["x-priority"]).toBe("high");
+          expect(this.req.headers["x-shared-header"]).toBe("from-request");
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      }, {
+        headers: {
+          "X-Environment": "production",
+          "X-Priority": "high",
+          "X-Shared-Header": "from-request"
+        }
+      });
+    });
+
+    it("should preserve non-overridden default headers", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-Keep-Default": "keep-this",
+            "X-Override-This": "original-value",
+            "X-Also-Keep": "also-keep-this"
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          // Non-overridden defaults should remain
+          expect(this.req.headers["x-keep-default"]).toBe("keep-this");
+          expect(this.req.headers["x-also-keep"]).toBe("also-keep-this");
+          
+          // Overridden header should have new value
+          expect(this.req.headers["x-override-this"]).toBe("new-value");
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      }, {
+        headers: {
+          "X-Override-This": "new-value"
+        }
+      });
+    });
+
+    it("should handle case-insensitive header overrides correctly", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-Test-Header": "default-value"
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          // HTTP headers are case-insensitive, so request header should override default
+          const testHeaderValue = this.req.headers["x-test-header"];
+          
+          // Per-request should win
+          expect(testHeaderValue).toBe("request-value");
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      }, {
+        headers: {
+          "x-test-header": "request-value"  // Different case
+        }
+      });
+    });
+  });
+
+  describe("Content-Type header protection behavior", () => {
+    it("does not honor Content-Type header from baseOptions override", async () => {
+      // The SDK protects Content-Type
+      // User attempts to set Content-Type via baseOptions are ignored
+      
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "Content-Type": "text/plain",           // SDK ignores this
+            "X-Custom-Header": "should-work"        // Custom headers work fine
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          const headers = this.req.headers;
+          
+          // SDK enforces Content-Type for JSON APIs
+          expect(headers["content-type"]).toBe("application/json");
+          
+          // Custom headers are preserved
+          expect(headers["x-custom-header"]).toBe("should-work");
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      });
+    });
+
+    it("does not allow Content-Type override via per-request headers", async () => {
+      // SDK always enforces Content-Type for JSON requests; user attempts to override are ignored
+
+      const fgaClient = new OpenFgaClient(testConfig);
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          // SDK always enforces Content-Type for JSON APIs
+          expect(this.req.headers["content-type"]).toBe("application/json");
+          expect(this.req.headers["x-custom-request"]).toBe("request-value");
+
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      }, {
+        headers: {
+          "Content-Type": "application/xml",        // SDK ignores this
+          "X-Custom-Request": "request-value"       // Custom headers still work
+        }
+      });
+    });
+
+    it("should set Content-Type to application/json by default", async () => {
+      // When no Content-Type is specified, SDK sets it to application/json
+      
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-API-Version": "v1",              // Custom header without Content-Type
+            "Authorization": "Bearer token"      // Another custom header
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          const headers = this.req.headers;
+          
+          // SDK automatically sets Content-Type for JSON APIs
+          expect(headers["content-type"]).toBe("application/json");
+          
+          // Custom headers are preserved
+          expect(headers["x-api-version"]).toBe("v1");
+          expect(headers["authorization"]).toBe("Bearer token");
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      });
+    });
+
+    it("SDK enforces Content-Type and Accept regardless of baseOptions headers", async () => {
+      // SDK always enforces Content-Type and Accept for JSON requests
+
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "Content-Type": "text/plain",       // SDK ignores this
+            "Accept": "text/html",              // SDK ignores this too
+            "X-Custom": "definitely-works"      // Custom headers always work
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          const headers = this.req.headers;
+
+          // SDK enforces Content-Type and Accept for JSON APIs
+          expect(headers["content-type"]).toBe("application/json");
+          expect(headers["accept"]).toBe("application/json");
+
+          // Custom headers are passed through
+          expect(headers["x-custom"]).toBe("definitely-works");
+
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      });
+    });
+  });
+
+  describe("Edge cases and special scenarios", () => {
+    it("should handle empty baseOptions headers", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {}
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          // Should still have SDK headers
+          expect(this.req.headers["content-type"]).toBe("application/json");
+          expect(this.req.headers["user-agent"]).toMatch(/openfga-sdk/);
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      });
+    });
+
+    it("should handle undefined baseOptions", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig
+        // No baseOptions specified
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          // Should still have SDK headers
+          expect(this.req.headers["content-type"]).toBe("application/json");
+          expect(this.req.headers["user-agent"]).toMatch(/openfga-sdk/);
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      });
+    });
+
+    it("should handle empty per-request headers", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-Default": "default-value"
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          // Default headers should still be present
+          expect(this.req.headers["x-default"]).toBe("default-value");
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      }, {
+        headers: {}  // Empty headers object
+      });
+    });
+
+    it("should handle special header values", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-Empty-String": "",
+            "X-Number-Value": "123",
+            "X-Boolean-Value": "true",
+            "X-Special-Chars": "test@#$%^&*()_+-={}[]|\\:;\"'<>,.?/"
+          }
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          const headers = this.req.headers;
+          
+          expect(headers["x-empty-string"]).toBe("");
+          expect(headers["x-number-value"]).toBe("123");
+          expect(headers["x-boolean-value"]).toBe("true");
+          expect(headers["x-special-chars"]).toBe("test@#$%^&*()_+-={}[]|\\:;\"'<>,.?/");
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      });
+    });
+
+    it("should handle large number of headers", async () => {
+      const defaultHeaders: Record<string, string> = {};
+      const requestHeaders: Record<string, string> = {};
+      
+      // Create many default headers
+      for (let i = 1; i <= 50; i++) {
+        defaultHeaders[`X-Default-${i}`] = `default-value-${i}`;
+      }
+      
+      // Create many request headers
+      for (let i = 1; i <= 50; i++) {
+        requestHeaders[`X-Request-${i}`] = `request-value-${i}`;
+      }
+
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: defaultHeaders
+        }
+      });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          const headers = this.req.headers;
+          
+          // Verify a sample of default headers
+          expect(headers["x-default-1"]).toBe("default-value-1");
+          expect(headers["x-default-25"]).toBe("default-value-25");
+          expect(headers["x-default-50"]).toBe("default-value-50");
+          
+          // Verify a sample of request headers
+          expect(headers["x-request-1"]).toBe("request-value-1");
+          expect(headers["x-request-25"]).toBe("request-value-25");
+          expect(headers["x-request-50"]).toBe("request-value-50");
+          
+          return [200, { allowed: true }];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      }, {
+        headers: requestHeaders
+      });
+    });
+  });
+
+  describe("Header behavior across different API methods", () => {
+    it("should send headers consistently across different API endpoints", async () => {
+      const fgaClient = new OpenFgaClient({
+        ...testConfig,
+        baseOptions: {
+          headers: {
+            "X-Consistent-Header": "always-present"
+          }
+        }
+      });
+
+      // Test multiple endpoints
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/check`)
+        .reply(function() {
+          expect(this.req.headers["x-consistent-header"]).toBe("always-present");
+          return [200, { allowed: true }];
+        });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/read`)
+        .reply(function() {
+          expect(this.req.headers["x-consistent-header"]).toBe("always-present");
+          return [200, { tuples: [] }];
+        });
+
+      nock(testConfig.apiUrl!)
+        .post(`/stores/${testConfig.storeId}/write`)
+        .reply(function() {
+          expect(this.req.headers["x-consistent-header"]).toBe("always-present");
+          return [200, {}];
+        });
+
+      await fgaClient.check({
+        user: "user:test",
+        relation: "reader",
+        object: "document:test"
+      });
+
+      await fgaClient.read({});
+
+      await fgaClient.write({
+        writes: [{
+          user: "user:test",
+          relation: "reader", 
+          object: "document:test"
+        }]
+      });
+    });
+  });
+});
