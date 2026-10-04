@@ -112,6 +112,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         openfgaHost: host,
         resolved,
         openfgaMs: round(performance.now() - started),
+        memoryMiB: {
+          rss: round(process.memoryUsage.rss() / 1048576),
+          heapUsed: round(process.memoryUsage().heapUsed / 1048576),
+        },
       })
     }
 

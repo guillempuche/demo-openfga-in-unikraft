@@ -47,7 +47,7 @@ run_from_yaml() {
 }
 
 wait_running() {
-  unikraft instances wait "$1" --until state==running --timeout 3m
+  unikraft instances wait "$1" --until state==running --timeout 3m -o quiet
   show_instance "$1"
 }
 
@@ -100,10 +100,10 @@ runtime:
     OPENFGA_DATASTORE_URI: $(yq_str "$(datastore_uri)")
 EOF
   run_from_yaml "$MIGRATE_NAME"
-  unikraft instances wait "$MIGRATE_NAME" --until state==stopped --timeout 5m
+  unikraft instances wait "$MIGRATE_NAME" --until state==stopped --timeout 5m -o quiet
   unikraft instances get "$MIGRATE_NAME" -f name,state,stop
   unikraft instances logs "$MIGRATE_NAME" 2>&1 | redact | tail -n 15
-  unikraft instances delete "$MIGRATE_NAME"
+  unikraft instances delete "$MIGRATE_NAME" -o quiet
 fi
 
 if [[ "$target" == openfga || "$target" == all ]]; then

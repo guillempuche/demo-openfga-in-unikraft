@@ -24,7 +24,7 @@ guard() {
 for name in "$API_NAME" "$OPENFGA_NAME" "$MIGRATE_NAME" "$POSTGRES_NAME"; do
   guard "$name"
   if instance_exists "$name"; then
-    unikraft instances delete "$name"
+    unikraft instances delete "$name" -o quiet && echo "deleted $name"
   else
     echo "$name: not found"
   fi
@@ -33,7 +33,7 @@ done
 if $volume; then
   guard "$POSTGRES_VOLUME"
   # The volume detaches asynchronously after its instance is deleted.
-  unikraft instances wait "$POSTGRES_NAME" --until state==deleted --timeout 1m 2>/dev/null || true
+  unikraft instances wait "$POSTGRES_NAME" --until state==deleted --timeout 1m -o quiet 2>/dev/null || true
   unikraft volumes delete "$POSTGRES_VOLUME" || true
 fi
 
