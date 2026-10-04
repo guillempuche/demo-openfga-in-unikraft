@@ -32,6 +32,7 @@ type(scope): subject in imperative mood
 1. **Subject**: Imperative mood, lowercase after colon, no period, max 72 chars
 2. **Scope**: Derived from path. When changes span multiple scopes, omit the scope entirely
    - `authz` – Authorization stack and FGA models
+   - `api` – Public demo API (`api/`)
    - `infra` – Kraftfiles, Dockerfiles, deployment configs
    - `nix` – Flake and Nix configuration
 3. **Body**: Past tense, capital start, period at end

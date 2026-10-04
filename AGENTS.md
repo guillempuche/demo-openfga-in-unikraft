@@ -1,142 +1,91 @@
 # AI Agent Context
 
-This document provides context for AI coding assistants working on this project.
+Context for AI coding agents (Claude Code, Codex, Cursor, Copilot, and others) working on this repository. User-facing documentation is in [README.md](README.md); measured results are in [docs/RESULTS.md](docs/RESULTS.md).
 
-## Project Overview
+## Project overview
 
-Demo project showcasing the OpenFGA authorization system running both in local containers and on Unikraft unikernels. Currently implements a modular ReBAC (Relationship-Based Access Control) system for managing permissions across projects, lists, and tasks, and includes the Kraftfiles and rootfs assets needed to push the same build to Unikraft Cloud.
+Example of OpenFGA (ReBAC, fine-grained authorization) running on Unikraft Cloud unikernels: a private OpenFGA instance and a private PostgreSQL instance reached over Unikraft's internal network (`<name>.internal`), with a small public Node.js/TypeScript API in front. The same FGA models run locally with Docker Compose.
 
-## Tech Stack
+## Facts
 
-- **Authorization**: OpenFGA v1.11.0 (FGA DSL models)
-- **Database**: PostgreSQL 17.2
-- **Infrastructure**: Docker Compose (local) + Unikraft Cloud (`unikraft` CLI)
-- **Cloud datastore**: private PostgreSQL 16 instance on Unikraft (`infrastructure/kraftcloud/postgres/`)
-- **Demo API**: Node.js 24, TypeScript via native type stripping (`api/`)
-- **Dev Environment**: Nix Flakes (reproducible tooling)
-- **Future**: Additional benchmarks and ReBAC modules
+| | Local (`authz/docker-compose.yaml`) | Unikraft Cloud (`scripts/`) |
+| --- | --- | --- |
+| OpenFGA | v1.11.0, `http://localhost:8080` (via Caddy), key `dev-key-1` | v1.11.0, `demo-fga-openfga.internal:8080`, no public port; tunnel: `localhost:18080` |
+| Playground | `http://localhost:8082/playground` | disabled |
+| PostgreSQL | 17.2, host port 5435 | 16.4, `demo-fga-postgres.internal:5432`, volume `demo-fga-pgdata` (512MiB) |
+| API | `cd api && FGA_KEY=dev-key-1 FGA_API_URL=http://localhost:8080 PORT=3001 npm start` | `demo-fga-api`, public HTTPS 443→8080: `/health`, `/check`, `/bench` |
+| Config | `authz/.env` (from `authz/.env.example`) | root `.env` (from `.env.example`): `UNIKRAFT_PROFILE`, `FGA_KEY`, `POSTGRES_PASSWORD`, optional `OPENFGA_DATASTORE_URI` |
+| Store | create with `fga store create` (no fixed ID) | `demo-fga`, created by `scripts/seed.sh`; the API finds it by name |
 
-## Architecture
+Tooling: OpenFGA CLI `fga`, `unikraft` CLI 0.5.x (not the deprecated `kraft cloud`), Node.js 24 (runs `.ts` natively), Docker with BuildKit, jq. `nix develop` provides all of them except Docker.
 
-### Authorization Models
+## Layout
 
-Located in `authz/models/`:
+```
+authz/                      local stack (compose, Caddyfile, .env.example) and FGA models
+authz/models/               fga.mod, projects.fga, tasks.fga, *.fga.yaml tests
+authz/seed/tuples.yaml      synthetic tuples for the demo store
+api/                        server.ts, server.test.ts, Kraftfile, Dockerfile
+infrastructure/unikraft/    openfga/ and postgres/ Kraftfiles and Dockerfiles
+scripts/                    env.sh (shared), build, deploy, tunnel, seed, test-remote, verify, cleanup
+docs/RESULTS.md             measured results; docs/1-*, docs/2-* are historical (legacy CLI)
+.github/workflows/ci.yml    CI: model tests, API typecheck + tests, shellcheck, API rootfs build
+```
 
-- `fga.mod`: Manifest declaring included modules
-- `projects.fga`: Project-level permissions (owner, contributor, viewer)
-- `tasks.fga`: Task-level permissions with list inheritance
-
-Permission flow: `project → list → task` (hierarchical inheritance)
-
-### Key Concepts
-
-- **ReBAC**: Relationship-based checks (`user:alice` has relation `owner` with `project:roadmap`)
-- **Modular models**: Separate bounded contexts that reference each other
-- **Cascading permissions**: Child resources inherit parent permissions via `from` clauses
-
-## Development Workflow
-
-### Environment Setup
+## Local workflow
 
 ```bash
-nix develop          # Enter dev shell
-cd authz
-docker compose up -d # Start OpenFGA + PostgreSQL
+cp authz/.env.example authz/.env
+docker compose -f authz/docker-compose.yaml --env-file authz/.env up -d
+
+export FGA_API_URL=http://localhost:8080 FGA_API_TOKEN=dev-key-1
+export FGA_STORE_ID=$(fga store create --name demo-fga --model authz/models/fga.mod | jq -r .store.id)
+fga tuple write --file authz/seed/tuples.yaml
+fga query check user:alice can_edit project:roadmap     # allowed: true
 ```
 
-### Common Tasks
-
-**Deploy authorization model:**
+Checks to run after changes (all run in CI):
 
 ```bash
-fga model write \
-  --store-id=01JKBYH927ZKTK9N0SJWWAAXC0 \
-  --api-url=https://localhost:4080 \
-  --api-token=dev-key-1 \
-  --file authz/models/fga.mod
+fga model test --tests 'authz/models/*.fga.yaml'   # expect Tests 10/10, Checks 31/31
+cd api && npm ci && npm run typecheck && npm test   # node:test against a stub OpenFGA
+bash -n scripts/*.sh scripts/env.sh
 ```
 
-**Run tests:**
+`fga model test --tests` takes one path or glob. Listing two files silently tests only the first.
+
+## Cloud workflow
 
 ```bash
-fga model test --tests authz/models/projects.fga.yaml authz/models/tasks.fga.yaml
+./scripts/build.sh            # build each image to a local OCI archive, then `unikraft images copy` it
+./scripts/deploy.sh           # postgres → migrate → openfga → api
+./scripts/tunnel.sh           # foreground; run it in the background or another terminal
+./scripts/seed.sh             # needs the tunnel
+./scripts/test-remote.sh      # fga model test against the deployed store (needs the tunnel)
+./scripts/verify.sh           # public API + exposure checks; non-zero exit on failure
+./scripts/cleanup.sh          # delete demo-fga-* instances (keeps volume and images)
 ```
 
-**Check permissions:**
+Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. Building the postgres image takes about 11 minutes (PostgreSQL compiled under emulation on Apple Silicon).
 
-```bash
-fga query check user:alice can_edit project:roadmap
-```
+## Guardrails
 
-### Unikraft CLI Commands
+- **Use the scripts.** They pin every `unikraft` call to `UNIKRAFT_PROFILE`. For a raw command, set the profile first: `export UNIKRAFT_PROFILE=<profile from .env>`. The account may host other workloads.
+- **Touch only `demo-fga-*`** instances, volumes and images. Tunnel relays are named `inst-*` (image `utils/tunnel`); close the tunnel instead of deleting them by name.
+- **Never print secrets.** `unikraft instances get`, `wait`, `delete` and `list -o json|yaml` include `runtime.env` (passwords, keys) unless you pass `-f <fields>` or `-o quiet`. `unikraft run --dry-run` also prints env values. Pipe `unikraft instances logs` through the `redact` function in `scripts/env.sh`. Don't `cat .env`, run `env`/`printenv`, or use `set -x`.
+- **Keep secrets off argv.** `unikraft run -e` only takes `KEY=VALUE`; `scripts/deploy.sh` writes a 0600 YAML spec and uses `--load` instead. `yq_str` quotes values through stdin.
+- **Ask before data loss.** `cleanup.sh --volume` or `--all` deletes the Postgres volume (store, model and tuples).
+- **Keep the two-step build.** A direct `unikraft build --output <org>/<image>` fails with `failed to package kernel … connection reset by peer` on slow or VPN links.
 
-Use the `unikraft` skill from the Claude plugin for the CLI reference. Use the `unikraft` CLI, not the deprecated `kraft cloud`. It authenticates with a saved profile (`unikraft login`), so no `UKC_TOKEN` export is needed. Never print tokens or secrets.
+## Conventions
 
-**Quick Reference:**
+- Commit messages: `type(scope): subject` in the imperative, with a bulleted past-tense body; types `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `cicd`, `ai`; scopes `authz`, `api`, `infra`, `nix`. Full rules: [.claude/skills/git-commit-messages/SKILL.md](.claude/skills/git-commit-messages/SKILL.md).
+- Shell scripts: `#!/usr/bin/env bash`, source `scripts/env.sh`, pass `shellcheck -x -S warning`.
+- The API has no runtime dependencies (only `node:` modules and `fetch`); keep TypeScript to erasable syntax (`erasableSyntaxOnly`).
+- Each `.fga` module has a `.fga.yaml` test file beside it, covering positive, negative and inherited cases.
 
-```bash
-./scripts/build.sh              # unikraft build <dir> --output <org>/<image>:latest
-./scripts/deploy.sh             # unikraft run --load <0600 yaml> (secrets stay off argv)
-./scripts/tunnel.sh             # unikraft instances tunnel 18080:fra/demo-fga-openfga:8080/tcp
-./scripts/cleanup.sh            # unikraft instances delete demo-fga-{api,openfga,postgres}
-unikraft instances list
-unikraft instances get demo-fga-openfga -f name,state,networks   # -f avoids printing runtime.env
-unikraft instances logs demo-fga-openfga
-```
+## References
 
-Only create or delete instances named `demo-fga-*`; the account hosts other workloads.
-
-## File Structure
-
-```
-.
-├── authz/
-│   ├── docker-compose.yaml      # OpenFGA + PostgreSQL stack
-│   ├── .env.example             # Environment variables template
-│   └── models/
-│       ├── fga.mod              # Model manifest
-│       ├── projects.fga         # Project authorization logic
-│       ├── projects.fga.yaml    # Project tests
-│       ├── tasks.fga            # Task authorization logic
-│       └── tasks.fga.yaml       # Task tests
-├── api/                         # Public demo API (/health, /check, /bench)
-├── infrastructure/kraftcloud/
-│   ├── openfga/Kraftfile        # OpenFGA unikernel (rootfs: Dockerfile.openfga)
-│   ├── postgres/                # PostgreSQL unikernel (vendored Unikraft example)
-│   └── docker-compose.yaml      # Local smoke test of the unikernel Dockerfiles
-├── scripts/                     # unikraft CLI wrappers (build/deploy/tunnel/seed/test/cleanup)
-├── docs/RESULTS.md              # Unikraft Cloud test results
-├── flake.nix                    # Nix dev environment
-├── flake.lock                   # Pinned dependencies
-└── README.md                    # User-facing documentation
-```
-
-## Important Notes
-
-- Local server uses self-signed TLS cert (expect certificate warnings)
-- Store ID is hard-coded in `.env.example` (create via `fga store create` if needed)
-- Playground UI available at `http://localhost:8082/playground`
-
-## Documentation References
-
-For detailed guides, see [README.md](README.md):
-
-- [Local Setup](README.md#openfga-local-setup) – Docker Compose stack for development
-- [Authorization Models](README.md#authorization-models) – Deploy, inspect, test, and extend FGA models
-- [Unikraft Cloud Deployment](README.md#unikraft-cloud-deployment) – Private OpenFGA + public API on Unikraft
-- [Local Smoke Test](README.md#local-smoke-test) – Validate builds before cloud deployment
-
-## Testing Strategy
-
-Each `.fga` module has a corresponding `.fga.yaml` test file:
-
-- Define tuples (relationships)
-- Assert expected authorization outcomes
-- Cover positive and negative cases
-- Test inheritance and cascading permissions
-
-## External References
-
-- [OpenFGA Documentation](https://openfga.dev/docs)
-- [Unikraft Documentation](https://unikraft.org/docs)
-- [FGA DSL Syntax](https://openfga.dev/docs/modeling/language)
+- [OpenFGA documentation](https://openfga.dev/docs) and [FGA DSL](https://openfga.dev/docs/configuration-language)
+- [unikraft CLI](https://unikraft.com/docs/cli/unikraft) and [networking](https://unikraft.com/docs/platform/networking)
+- Claude Code users can also load the `unikraft:unikraft` plugin skill; everything an agent needs to work safely is in this file.
