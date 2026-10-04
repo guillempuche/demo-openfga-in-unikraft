@@ -1,0 +1,27 @@
+demo-openfga-in-unikraft
+Copyright 2025-2026 Guillem Puche
+
+Licensed under the Apache License, Version 2.0 (see LICENSE), except for the
+third-party files listed below, which keep their original terms.
+
+Third-party files
+-----------------
+
+infrastructure/unikraft/postgres/
+  Copied from the Unikraft Cloud examples repository:
+  https://github.com/unikraft-cloud/examples/tree/main/postgres
+  The upstream repository does not state a license; these files are not
+  covered by this repository's LICENSE. Local change: Kraftfile name and
+  max_wal_size.
+
+infrastructure/unikraft/postgres/wrapper.sh
+  Derived from the docker-library/postgres entrypoint script:
+  https://github.com/docker-library/postgres
+  MIT License, Copyright (c) 2014, Docker PostgreSQL Authors.
+
+Software built into the images (not stored in this repository)
+--------------------------------------------------------------
+
+OpenFGA (https://github.com/openfga/openfga), Apache License 2.0.
+PostgreSQL (https://www.postgresql.org), PostgreSQL License.
+Node.js (https://nodejs.org), MIT License.
