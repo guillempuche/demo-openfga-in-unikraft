@@ -1,12 +1,36 @@
 #!/usr/bin/env bash
-# Build and push the unikernel images: ./scripts/build.sh [openfga|api|all]
+# Build and push the unikernel images: ./scripts/build.sh [postgres|openfga|api|all]
+#
+# Builds to a local OCI archive first and then pushes it with `images copy`.
+# A direct `unikraft build --output <org>/<image>` streams the base-compat
+# runtime from S3 into the registry upload; on slow or VPN links S3 resets that
+# connection ("failed to package kernel ... connection reset by peer"). The
+# two-step flow downloads at full speed and only uploads afterwards.
 . "$(dirname "$0")/env.sh"
 
 target="${1:-all}"
+outdir="$(mktemp -d)"
+trap 'rm -rf "$outdir"' EXIT
 
+build_push() {
+  local name="$1" dir="$2" image="$3"
+  echo "==> building $name ($dir)"
+  unikraft build "$dir" --output "$outdir/$name.oci.tar"
+  echo "==> pushing unikraft.io/$image"
+  unikraft images copy "$outdir/$name.oci.tar" "unikraft.io/$image"
+}
+
+case "$target" in
+  postgres | openfga | api | all) ;;
+  *) echo "usage: $0 [postgres|openfga|api|all]" >&2; exit 1 ;;
+esac
+
+if [[ "$target" == postgres || "$target" == all ]]; then
+  build_push postgres "$ROOT/infrastructure/kraftcloud/postgres" "$POSTGRES_IMAGE"
+fi
 if [[ "$target" == openfga || "$target" == all ]]; then
-  unikraft build "$ROOT/infrastructure/kraftcloud/openfga" --output "$OPENFGA_IMAGE"
+  build_push openfga "$ROOT/infrastructure/kraftcloud/openfga" "$OPENFGA_IMAGE"
 fi
 if [[ "$target" == api || "$target" == all ]]; then
-  unikraft build "$ROOT/api" --output "$API_IMAGE"
+  build_push api "$ROOT/api" "$API_IMAGE"
 fi

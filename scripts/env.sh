@@ -33,8 +33,12 @@ UNIKRAFT_METRO="${UNIKRAFT_METRO:-fra}"
 # Every cloud resource this demo creates is prefixed with demo-fga-; the
 # cleanup script refuses to touch anything else.
 PREFIX="demo-fga-"
+POSTGRES_NAME="${PREFIX}postgres"
+POSTGRES_VOLUME="${PREFIX}pgdata"
+MIGRATE_NAME="${PREFIX}migrate"
 OPENFGA_NAME="${PREFIX}openfga"
 API_NAME="${PREFIX}api"
+POSTGRES_IMAGE="$UNIKRAFT_ORG/${POSTGRES_NAME}:latest"
 OPENFGA_IMAGE="$UNIKRAFT_ORG/${OPENFGA_NAME}:latest"
 API_IMAGE="$UNIKRAFT_ORG/${API_NAME}:latest"
 OPENFGA_VERSION="v1.11.0"
