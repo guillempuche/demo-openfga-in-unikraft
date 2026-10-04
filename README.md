@@ -1,6 +1,6 @@
 # Demo OpenFGA for Unikraft
 
-OpenFGA is one of the most widely adopted relationship-based authorization services. This project runs it on Unikraft unikernels: a **private** OpenFGA instance (no public port) backed by Neon Postgres, and a tiny **public** API that reaches it over Unikraft's internal network (`demo-fga-openfga.internal`). The same models and tests run locally with Docker Compose.
+OpenFGA is one of the most widely adopted relationship-based authorization services. This project runs it on Unikraft unikernels: a **private** OpenFGA instance (no public port) backed by a **private** Postgres instance, and a tiny **public** API that reaches it over Unikraft's internal network (`demo-fga-openfga.internal`). The same models and tests run locally with Docker Compose.
 
 ## Table of Contents
 
@@ -18,7 +18,6 @@ OpenFGA is one of the most widely adopted relationship-based authorization servi
 - [Unikraft Cloud Deployment](#unikraft-cloud-deployment)
   - [Architecture](#architecture)
   - [Configure Secrets](#configure-secrets)
-  - [Migrate the Database](#migrate-the-database)
   - [Build the Images](#build-the-images)
   - [Deploy](#deploy)
   - [Seed and Test Through the Tunnel](#seed-and-test-through-the-tunnel)
@@ -42,7 +41,8 @@ OpenFGA is one of the most widely adopted relationship-based authorization servi
 - `api/` – Public demo API (Node.js, TypeScript run natively) with its Kraftfile and Dockerfile.
 - `infrastructure/kraftcloud/openfga/` – OpenFGA Kraftfile and rootfs.
 - `infrastructure/kraftcloud/docker-compose.yaml` – Local smoke test of the unikernel Dockerfiles (OpenFGA + Caddy).
-- `scripts/` – `unikraft` CLI wrappers: build, migrate, deploy, tunnel, seed, test, verify, cleanup.
+- `infrastructure/kraftcloud/postgres/` – PostgreSQL Kraftfile and rootfs (Unikraft example, vendored).
+- `scripts/` – `unikraft` CLI wrappers: build, deploy (postgres, migrate, openfga, api), tunnel, seed, test, verify, cleanup.
 - `Dockerfile.openfga` – OpenFGA rootfs (static Go build).
 - `Dockerfile.caddy` – Caddy rootfs, used only by the local smoke test.
 - `docs/RESULTS.md` – Results of the Unikraft Cloud tests.
@@ -183,6 +183,8 @@ fga model transform \
 
 ## Unikraft Cloud Deployment
 
+Everything runs on Unikraft Cloud: database, authorization server and API.
+
 ### Architecture
 
 ```
@@ -191,54 +193,59 @@ internet ──HTTPS──▶ demo-fga-api (public, 443→8080)
                          │  Authorization: Bearer $FGA_KEY
                          ▼
                     demo-fga-openfga (no published ports, scale-to-zero off)
-                         │  TLS
+                         │  postgres://…@demo-fga-postgres.internal:5432
                          ▼
-                    Neon Postgres (direct, unpooled URL)
+                    demo-fga-postgres (no published ports, volume demo-fga-pgdata)
 ```
 
-- Every instance gets a private IP and a private FQDN `<instance-name>.internal` on the account's internal network ([docs](https://unikraft.com/docs/platform/networking)). OpenFGA publishes no service, so none of its ports (8080 HTTP, 8081 gRPC, 3000 Playground, 2112 metrics) are reachable from the internet.
+- Every instance gets a private IP and a private FQDN `<instance-name>.internal` on the account's internal network ([docs](https://unikraft.com/docs/platform/networking)). OpenFGA and Postgres publish no service, so none of their ports (8080 HTTP, 8081 gRPC, 3000 Playground, 2112 metrics, 5432) are reachable from the internet. Internal traffic is unencrypted but never leaves the account's network.
 - OpenFGA requires a preshared key (`OPENFGA_AUTHN_METHOD=preshared`). The Playground is disabled in the cloud.
 - The API looks up the store by name (`demo-fga`), so it needs no store ID and no IP, and survives redeploys without config changes.
+- Postgres keeps its data on a 512MiB volume that survives instance deletion.
 
-| Instance           | Image                        | Memory | Public           |
-| ------------------ | ---------------------------- | ------ | ---------------- |
-| `demo-fga-openfga` | `<org>/demo-fga-openfga`     | 512MiB | no               |
-| `demo-fga-api`     | `<org>/demo-fga-api`         | 512MiB | yes (HTTPS 443)  |
+| Instance            | Image                       | Memory | Public          |
+| ------------------- | --------------------------- | ------ | --------------- |
+| `demo-fga-postgres` | `<org>/demo-fga-postgres`   | 512MiB | no              |
+| `demo-fga-openfga`  | `<org>/demo-fga-openfga`    | 512MiB | no              |
+| `demo-fga-api`      | `<org>/demo-fga-api`        | 512MiB | yes (HTTPS 443) |
+
+`demo-fga-postgres` is the [Unikraft postgres example](https://github.com/unikraft-cloud/examples/tree/main/postgres) (PostgreSQL 16.4, patched to run as root, which Unikraft requires), vendored in `infrastructure/kraftcloud/postgres/`.
 
 ### Configure Secrets
 
-Secrets live in a gitignored `.env` at the repo root (or in your shell environment):
+Pick the CLI profile and generate the secrets into a gitignored `.env` at the repo root:
 
 ```bash
 cp .env.example .env
-# NEON_OPENFGA_DIRECT_URL=postgresql://...neon.tech/openfga?sslmode=require   (direct, not -pooler)
+# UNIKRAFT_PROFILE=kybrion
 # FGA_KEY=$(openssl rand -hex 32)
+# POSTGRES_PASSWORD=$(openssl rand -hex 24)
 ```
 
-The scripts never print them. `unikraft run -e` only accepts `KEY=VALUE` arguments, which would expose secrets in the process list, so `scripts/deploy.sh` writes each instance spec to a `0600` temp file and passes it with `unikraft run --load`. `unikraft instances get` shows `runtime.env` by default; the scripts select fields with `-f` to avoid printing it.
+The scripts never print them, and they pin every `unikraft` call to `UNIKRAFT_PROFILE`, so they never act on whichever profile is currently active. `unikraft run -e` only accepts `KEY=VALUE` arguments, which would expose secrets in the process list, so `scripts/deploy.sh` writes each instance spec to a `0600` temp file and passes it with `unikraft run --load`. `unikraft instances get` shows `runtime.env` by default; the scripts select fields with `-f` to avoid printing it.
 
-### Migrate the Database
-
-Run once against an empty Neon database:
-
-```bash
-./scripts/migrate.sh   # docker run --rm openfga/openfga:v1.11.0 migrate (URI read from env)
-```
+To use an external Postgres instead, set `OPENFGA_DATASTORE_URI` in `.env` and skip the `postgres` step.
 
 ### Build the Images
 
-`unikraft build` builds the rootfs from the Dockerfile referenced by each Kraftfile and pushes the image:
-
 ```bash
-./scripts/build.sh            # both
-# equivalent to:
-unikraft build infrastructure/kraftcloud/openfga --output <org>/demo-fga-openfga:latest
-unikraft build api --output <org>/demo-fga-api:latest
+./scripts/build.sh            # postgres, openfga, api (or one of them)
+# equivalent to, per image:
+unikraft build infrastructure/kraftcloud/openfga --output ./openfga.oci.tar
+unikraft images copy ./openfga.oci.tar unikraft.io/<org>/demo-fga-openfga:latest
 ```
+
+The script builds to a local OCI archive and then pushes it. A direct `unikraft build --output <org>/<image>` streams the `base-compat` runtime from S3 into the registry upload, and on slow or VPN links S3 resets that connection (`failed to package kernel … connection reset by peer`).
+
+The postgres image compiles PostgreSQL from source for x86_64; on an Apple Silicon Mac that runs under emulation and takes a while the first time.
 
 ### Deploy
 
 ```bash
+./scripts/deploy.sh           # postgres → migrate → openfga → api
+# or step by step:
+./scripts/deploy.sh postgres  # private, 512MiB, volume demo-fga-pgdata, scale-to-zero off
+./scripts/deploy.sh migrate   # one-off `openfga migrate` instance on the private network, then deleted
 ./scripts/deploy.sh openfga   # private, 512MiB, --scale-to-zero policy=off
 ./scripts/deploy.sh api       # public HTTPS, 512MiB, scale-to-zero on (5s cooldown)
 ```
@@ -246,6 +253,16 @@ unikraft build api --output <org>/demo-fga-api:latest
 What it runs, shown as flags (the script passes the same fields via `--load` to keep secrets off argv):
 
 ```bash
+unikraft volumes create --metro fra --name demo-fga-pgdata --size 512MiB
+unikraft run --metro fra -n demo-fga-postgres --image <org>/demo-fga-postgres:latest \
+  -m 512MiB --scale-to-zero policy=off --restart on-failure -v demo-fga-pgdata:/volume \
+  -e POSTGRES_USER=openfga -e POSTGRES_DB=openfga -e POSTGRES_PASSWORD=... -e PGDATA=/volume/postgres
+
+unikraft run --metro fra -n demo-fga-migrate --image <org>/demo-fga-openfga:latest \
+  -m 256MiB --restart on-failure --args "/usr/bin/openfga migrate" \
+  -e OPENFGA_DATASTORE_ENGINE=postgres \
+  -e OPENFGA_DATASTORE_URI=postgres://openfga:...@demo-fga-postgres.internal:5432/openfga?sslmode=disable
+
 unikraft run --metro fra -n demo-fga-openfga --image <org>/demo-fga-openfga:latest \
   -m 512MiB --scale-to-zero policy=off --restart on-failure \
   -e OPENFGA_DATASTORE_ENGINE=postgres -e OPENFGA_DATASTORE_URI=... \
@@ -290,25 +307,31 @@ It calls the public API:
 - `GET /check?user=user:alice&relation=can_edit&object=project:roadmap`: one Check.
 - `GET /bench`: 100 sequential Checks (after 3 warm-up calls), returns p50/p95/max in ms.
 
-It also confirms OpenFGA has no service and that ports 8080/8081/3000/2112 don't answer on the public FQDN. See [docs/RESULTS.md](docs/RESULTS.md) for recorded results.
+It also confirms OpenFGA and Postgres have no service and that ports 8080/8081/3000/2112/5432 don't answer on the public FQDN. See [docs/RESULTS.md](docs/RESULTS.md) for recorded results.
 
 ### Redeploy
 
-Never restart in place; delete and run again:
+Never restart in place; delete and run again. The volume (and so the store, model and tuples) survives:
 
 ```bash
-./scripts/cleanup.sh && ./scripts/deploy.sh
+./scripts/cleanup.sh && ./scripts/deploy.sh postgres && ./scripts/deploy.sh openfga && ./scripts/deploy.sh api
 ```
 
 ### Clean Up
 
-Removes only `demo-fga-*` instances (add `--images` to also remove the `demo-fga-*` images):
+Removes only `demo-fga-*` resources:
 
 ```bash
-./scripts/cleanup.sh
+./scripts/cleanup.sh          # instances only (keeps volume and images)
+./scripts/cleanup.sh --all    # also the demo-fga-pgdata volume and the <org>/demo-fga-* images
 # equivalent to:
 unikraft instances delete demo-fga-api
 unikraft instances delete demo-fga-openfga
+unikraft instances delete demo-fga-postgres
+unikraft volumes delete demo-fga-pgdata
+unikraft images delete <org>/demo-fga-api:latest
+unikraft images delete <org>/demo-fga-openfga:latest
+unikraft images delete <org>/demo-fga-postgres:latest
 ```
 
 ## Reference

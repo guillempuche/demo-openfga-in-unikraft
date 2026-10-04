@@ -11,7 +11,7 @@ Demo project showcasing the OpenFGA authorization system running both in local c
 - **Authorization**: OpenFGA v1.11.0 (FGA DSL models)
 - **Database**: PostgreSQL 17.2
 - **Infrastructure**: Docker Compose (local) + Unikraft Cloud (`unikraft` CLI)
-- **Cloud datastore**: Neon Postgres (direct URL)
+- **Cloud datastore**: private PostgreSQL 16 instance on Unikraft (`infrastructure/kraftcloud/postgres/`)
 - **Demo API**: Node.js 24, TypeScript via native type stripping (`api/`)
 - **Dev Environment**: Nix Flakes (reproducible tooling)
 - **Future**: Additional benchmarks and ReBAC modules
@@ -78,7 +78,7 @@ Use the `unikraft` skill from the Claude plugin for the CLI reference. Use the `
 ./scripts/build.sh              # unikraft build <dir> --output <org>/<image>:latest
 ./scripts/deploy.sh             # unikraft run --load <0600 yaml> (secrets stay off argv)
 ./scripts/tunnel.sh             # unikraft instances tunnel 18080:fra/demo-fga-openfga:8080/tcp
-./scripts/cleanup.sh            # unikraft instances delete demo-fga-api demo-fga-openfga
+./scripts/cleanup.sh            # unikraft instances delete demo-fga-{api,openfga,postgres}
 unikraft instances list
 unikraft instances get demo-fga-openfga -f name,state,networks   # -f avoids printing runtime.env
 unikraft instances logs demo-fga-openfga
@@ -102,6 +102,7 @@ Only create or delete instances named `demo-fga-*`; the account hosts other work
 ├── api/                         # Public demo API (/health, /check, /bench)
 ├── infrastructure/kraftcloud/
 │   ├── openfga/Kraftfile        # OpenFGA unikernel (rootfs: Dockerfile.openfga)
+│   ├── postgres/                # PostgreSQL unikernel (vendored Unikraft example)
 │   └── docker-compose.yaml      # Local smoke test of the unikernel Dockerfiles
 ├── scripts/                     # unikraft CLI wrappers (build/deploy/tunnel/seed/test/cleanup)
 ├── docs/RESULTS.md              # Unikraft Cloud test results
