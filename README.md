@@ -1,191 +1,34 @@
-# Demo OpenFGA for Unikraft
+# OpenFGA on Unikraft Cloud: private ReBAC authorization with PostgreSQL and a Node.js API
 
-OpenFGA is one of the most widely adopted relationship-based authorization services. This project runs it on Unikraft unikernels: a **private** OpenFGA instance (no public port) backed by a **private** Postgres instance, and a tiny **public** API that reaches it over Unikraft's internal network (`demo-fga-openfga.internal`). The same models and tests run locally with Docker Compose.
+[![CI](https://github.com/guillempuche/demo-openfga-in-unikraft/actions/workflows/ci.yml/badge.svg)](https://github.com/guillempuche/demo-openfga-in-unikraft/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-## Table of Contents
+Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grained, relationship-based authorization) on [Unikraft Cloud](https://unikraft.com) unikernels. OpenFGA and PostgreSQL run as **private** instances, reachable only over Unikraft's internal network (`<name>.internal`); a small **public** Node.js/TypeScript API sits in front. Measured on Unikraft Cloud: **~1 ms p50** authorization checks from the API to OpenFGA, under 30 MiB of memory each for OpenFGA and the API, and the model tests passing against the deployed store. The same models run locally with Docker Compose.
 
-- [Overview](#overview)
-- [Directory Layout](#directory-layout)
-- [Prerequisites](#prerequisites)
-- [Local Smoke Test](#local-smoke-test)
-- [OpenFGA Local Setup](#openfga-local-setup)
-- [Authorization Models](#authorization-models)
-  - [Deploy the Manifest](#deploy-the-manifest)
-  - [Inspect the Combined Model](#inspect-the-combined-model)
-  - [Test the Models](#test-the-models)
-  - [Transform Models](#transform-models)
-  - [Add a New Model](#add-a-new-model)
-- [Unikraft Cloud Deployment](#unikraft-cloud-deployment)
-  - [Architecture](#architecture)
-  - [Configure Secrets](#configure-secrets)
-  - [Build the Images](#build-the-images)
-  - [Deploy](#deploy)
-  - [Seed and Test Through the Tunnel](#seed-and-test-through-the-tunnel)
-  - [Verify](#verify)
-  - [Redeploy](#redeploy)
-  - [Clean Up](#clean-up)
+## At a glance
+
+| What | Result ([details](docs/RESULTS.md)) |
+| --- | --- |
+| API → OpenFGA over `.internal`, warm check | p50 1.0–1.3 ms, p95 ≤ 2.4 ms (100 sequential checks) |
+| Same, OpenFGA check cache off (1 Postgres round trip) | p50 1.5–1.8 ms |
+| Exposure | No service on OpenFGA or Postgres; ports 8080/8081/3000/2112/5432 don't answer; no key → `401` |
+| Redeploy (delete + run, 32 s) | Every private IP changed and was reused by another instance; `.internal` names kept working with no config change |
+| `fga model test` against the deployed store | 10/10 tests, 31/31 checks |
+| Memory | OpenFGA 17.6 MiB RSS, API 26 MiB RSS (512 MiB allocated each) |
+
+## Contents
+
+- [Architecture](#architecture)
+- [Quick start (local)](#quick-start-local)
+- [Deploy to Unikraft Cloud](#deploy-to-unikraft-cloud)
+- [Patterns to copy](#patterns-to-copy)
+- [Gotchas](#gotchas)
+- [Authorization models](#authorization-models)
+- [Repository layout](#repository-layout)
+- [Development](#development)
 - [Reference](#reference)
 
-## Overview
-
-- **Reproducible tooling** powered by `flake.nix`: OpenFGA CLI, the `unikraft` CLI, Node.js and jq.
-- **Local OpenFGA stack** (PostgreSQL + OpenFGA + Caddy + Playground) for model development.
-- **Private OpenFGA on Unikraft Cloud** with a public API in front, connected over the internal network.
-- **Modular authorization models** and tests that run both locally and against the deployed instance.
-
-## Directory Layout
-
-- `authz/` – Local development stack (Docker Compose, Caddy, Playground) and authorization models.
-- `authz/models/` – FGA modules (`projects.fga`, `tasks.fga`) and tests.
-- `authz/seed/` – Synthetic tuples loaded into the deployed store.
-- `api/` – Public demo API (Node.js, TypeScript run natively) with its Kraftfile and Dockerfile.
-- `infrastructure/kraftcloud/openfga/` – OpenFGA Kraftfile and rootfs.
-- `infrastructure/kraftcloud/docker-compose.yaml` – Local smoke test of the unikernel Dockerfiles (OpenFGA + Caddy).
-- `infrastructure/kraftcloud/postgres/` – PostgreSQL Kraftfile and rootfs (Unikraft example, vendored).
-- `scripts/` – `unikraft` CLI wrappers: build, deploy (postgres, migrate, openfga, api), tunnel, seed, test, verify, cleanup.
-- `Dockerfile.openfga` – OpenFGA rootfs (static Go build).
-- `Dockerfile.caddy` – Caddy rootfs, used only by the local smoke test.
-- `docs/RESULTS.md` – Results of the Unikraft Cloud tests.
-
-## Prerequisites
-
-### Tooling
-
-1. **Docker**: builds root filesystems (BuildKit) and runs the local stacks.
-   - Verify: `docker --version && docker compose version`
-
-2. **Nix**: (Recommended) Enter the dev shell for consistent tooling (`fga`, `unikraft`, `node`, `jq`).
-   - Install [Nix](https://zero-to-nix.com/start/install/).
-   - Run: `nix develop` (or `nix develop -c zsh`).
-   - Without Nix: `brew install unikraft/cli/unikraft openfga/tap/fga jq node`.
-
-### Cloud Auth
-
-The `unikraft` CLI keeps credentials in a profile, so there is no token to export:
-
-```bash
-unikraft login
-unikraft profile list
-```
-
-The legacy `UKC_TOKEN`/`UKC_METRO` variables are only read by the deprecated `kraft cloud` CLI. Write commands take an explicit `--metro`; the scripts default to `fra`.
-
-## Local Smoke Test
-
-Use Docker Compose to confirm the unikernel Dockerfiles boot. Caddy and the Playground are local-only.
-
-```bash
-cp infrastructure/kraftcloud/.env.local.example infrastructure/kraftcloud/.env
-
-docker compose \
-  -f infrastructure/kraftcloud/docker-compose.yaml \
-  --env-file infrastructure/kraftcloud/.env \
-  up --build
-```
-
-Ensure you have a PostgreSQL instance running (e.g., from the `authz/docker-compose.yaml` stack) and configured in `.env` if testing full functionality.
-
-## OpenFGA Local Setup
-
-This is the reference deployment for **development**. It uses standard container images to prove out model changes and CLI flows.
-
-### Quick Start
-
-1. **Create the environment configuration**:
-
-   ```bash
-   cp authz/.env.example authz/.env
-   ```
-
-2. **Start the stack**:
-
-   ```bash
-   docker compose -f authz/docker-compose.yaml up -d
-   ```
-
-   - API: `http://localhost:8080`
-   - Playground: `http://localhost:8082/playground`
-
-3. **Load the model**:
-
-   ```bash
-   export STORE_ID=01KA43FJDTE8AQCYZ6252ZR9HS
-   export FGA_API_URL=http://localhost:8080
-   export FGA_API_TOKEN=dev-key-1
-
-   fga model write \
-     --store-id=$STORE_ID \
-     --api-url=$FGA_API_URL \
-     --api-token=$FGA_API_TOKEN \
-     --file authz/models/fga.mod
-   ```
-
-## Authorization Models
-
-OpenFGA stays popular because its modeling experience scales, so the repo keeps the canonical modules in `authz/models/` and runs them identically on Docker and Unikraft targets.
-
-- `authz/models/fga.mod`: Manifest that enumerates included modules.
-- `authz/models/projects.fga`: Users, projects, and lists with hierarchical sharing.
-- `authz/models/tasks.fga`: Tasks that inherit rights from their parent lists.
-
-Export the helper variables once per shell session so the CLI examples just work:
-
-```bash
-export STORE_ID=01KA43FJDTE8AQCYZ6252ZR9HS
-export FGA_API_URL=http://localhost:8080
-export FGA_API_TOKEN=dev-key-1
-```
-
-### Deploy the Manifest
-
-```bash
-fga model write \
-  --store-id=$STORE_ID \
-  --api-url=$FGA_API_URL \
-  --api-token=$FGA_API_TOKEN \
-  --file authz/models/fga.mod
-```
-
-The CLI prints the newly created `authorization_model_id`. This is the version identifier for the model you just wrote—keep using the same `STORE_ID` for all other commands, and optionally pass `--authorization-model-id` when you want to inspect an older version.
-
-### Inspect the Combined Model
-
-```bash
-fga model get \
-  --store-id=$STORE_ID \
-  --api-url=$FGA_API_URL \
-  --api-token=$FGA_API_TOKEN
-```
-
-### Test the Models
-
-Run from the repository root so the relative paths resolve correctly:
-
-```bash
-fga model test --tests authz/models/projects.fga.yaml authz/models/tasks.fga.yaml
-```
-
-### Transform Models
-
-```bash
-fga model transform \
-  --input ./authz/models/projects.fga \
-  --output ./authz/models/projects.json
-```
-
-### Add a New Model
-
-1. Create a `.fga` module in `authz/models/`.
-2. Declare the module and add your relationships.
-3. Append the file path to `authz/models/fga.mod`.
-4. Add tests (`*.fga.yaml`) beside the module.
-5. Redeploy with `fga model write`.
-
-## Unikraft Cloud Deployment
-
-Everything runs on Unikraft Cloud: database, authorization server and API.
-
-### Architecture
+## Architecture
 
 ```
 internet ──HTTPS──▶ demo-fga-api (public, 443→8080)
@@ -200,44 +43,85 @@ internet ──HTTPS──▶ demo-fga-api (public, 443→8080)
 
 - Every instance gets a private IP and a private FQDN `<instance-name>.internal` on the account's internal network ([docs](https://unikraft.com/docs/platform/networking)). OpenFGA and Postgres publish no service, so none of their ports (8080 HTTP, 8081 gRPC, 3000 Playground, 2112 metrics, 5432) are reachable from the internet. Internal traffic is unencrypted but never leaves the account's network.
 - OpenFGA requires a preshared key (`OPENFGA_AUTHN_METHOD=preshared`). The Playground is disabled in the cloud.
-- The API looks up the store by name (`demo-fga`), so it needs no store ID and no IP, and survives redeploys without config changes.
-- Postgres keeps its data on a 512MiB volume that survives instance deletion.
+- The API ([`api/server.ts`](api/server.ts)) finds OpenFGA by `.internal` name and the store by name (`demo-fga`), so it needs no IP or store ID and survives redeploys without config changes.
+- Postgres keeps its data on a 512 MiB volume that survives instance deletion.
 
-| Instance            | Image                       | Memory | Public          |
-| ------------------- | --------------------------- | ------ | --------------- |
-| `demo-fga-postgres` | `<org>/demo-fga-postgres`   | 512MiB | no              |
-| `demo-fga-openfga`  | `<org>/demo-fga-openfga`    | 512MiB | no              |
-| `demo-fga-api`      | `<org>/demo-fga-api`        | 512MiB | yes (HTTPS 443) |
+| Instance            | Image                     | Memory | Public          |
+| ------------------- | ------------------------- | ------ | --------------- |
+| `demo-fga-postgres` | `<org>/demo-fga-postgres` | 512MiB | no              |
+| `demo-fga-openfga`  | `<org>/demo-fga-openfga`  | 512MiB | no              |
+| `demo-fga-api`      | `<org>/demo-fga-api`      | 512MiB | yes (HTTPS 443) |
 
-`demo-fga-postgres` is the [Unikraft postgres example](https://github.com/unikraft-cloud/examples/tree/main/postgres) (PostgreSQL 16.4, patched to run as root, which Unikraft requires), vendored in `infrastructure/kraftcloud/postgres/`.
+The public API is a demo: `/check` answers any authorization question without authentication, and `/bench` is capped at 100 checks with one run at a time. Put real authentication in front before using this shape for anything else.
 
-### Configure Secrets
+## Quick start (local)
 
-Pick the CLI profile and generate the secrets into a gitignored `.env` at the repo root:
+Needs Docker and the [OpenFGA CLI](https://openfga.dev/docs/getting-started/cli) (`fga`); `nix develop` provides `fga`, `unikraft`, `node` and `jq`.
+
+```bash
+cp authz/.env.example authz/.env
+docker compose -f authz/docker-compose.yaml --env-file authz/.env up -d
+```
+
+This starts PostgreSQL, runs OpenFGA's migrations, and serves OpenFGA through Caddy:
+
+- OpenFGA HTTP API: `http://localhost:8080` (preshared key `dev-key-1`)
+- Playground: `http://localhost:8082/playground`
+
+Create a store, load the model and the synthetic tuples, and check a permission:
+
+```bash
+export FGA_API_URL=http://localhost:8080
+export FGA_API_TOKEN=dev-key-1
+export FGA_STORE_ID=$(fga store create --name demo-fga --model authz/models/fga.mod | jq -r .store.id)
+fga tuple write --file authz/seed/tuples.yaml
+fga query check user:alice can_edit project:roadmap     # {"allowed":true}
+fga query check user:mallory can_edit project:roadmap   # {"allowed":false}
+```
+
+Run the API against the local OpenFGA:
+
+```bash
+cd api && npm ci
+FGA_KEY=dev-key-1 FGA_API_URL=http://localhost:8080 PORT=3001 npm start
+curl 'http://localhost:3001/check?user=user:bob&relation=can_view&object=list:backlog'
+```
+
+Stop the stack with `docker compose -f authz/docker-compose.yaml down` (add `-v` to drop the database volume).
+
+## Deploy to Unikraft Cloud
+
+### Prerequisites
+
+- The [`unikraft` CLI](https://unikraft.com/docs/cli/unikraft) (`brew install unikraft/cli/unikraft`, or `nix develop`), logged in with `unikraft login`. The CLI keeps credentials in a profile; the legacy `UKC_TOKEN`/`UKC_METRO` variables are only read by the deprecated `kraft cloud` CLI.
+- Docker with BuildKit, to build the root filesystems.
+- A plan with at least **3 running instances** (postgres, openfga, api) plus one short-lived relay while tunnelling. The free Hobby plan allows 2 running instances ([pricing](https://unikraft.com/pricing)); the API scales to zero when idle, so 2 run in steady state.
+
+### Configure secrets
 
 ```bash
 cp .env.example .env
-# UNIKRAFT_PROFILE=kybrion
+# UNIKRAFT_PROFILE=<your-profile>             (see `unikraft profile list`)
 # FGA_KEY=$(openssl rand -hex 32)
 # POSTGRES_PASSWORD=$(openssl rand -hex 24)
 ```
 
-The scripts never print them, and they pin every `unikraft` call to `UNIKRAFT_PROFILE`, so they never act on whichever profile is currently active. `unikraft run -e` only accepts `KEY=VALUE` arguments, which would expose secrets in the process list, so `scripts/deploy.sh` writes each instance spec to a `0600` temp file and passes it with `unikraft run --load`. `unikraft instances get` shows `runtime.env` by default; the scripts select fields with `-f` to avoid printing it.
+`.env` is gitignored. The scripts never print secrets and pin every `unikraft` call to `UNIKRAFT_PROFILE`, so they never act on whichever profile happens to be active. Variables you export take precedence over `.env`. To use an external Postgres instead of the private instance, set `OPENFGA_DATASTORE_URI` and skip the `postgres` step.
 
-To use an external Postgres instead, set `OPENFGA_DATASTORE_URI` in `.env` and skip the `postgres` step.
-
-### Build the Images
+### Build the images
 
 ```bash
-./scripts/build.sh            # postgres, openfga, api (or one of them)
-# equivalent to, per image:
-unikraft build infrastructure/kraftcloud/openfga --output ./openfga.oci.tar
+./scripts/build.sh            # postgres, openfga, api (or name one)
+```
+
+Per image, this builds a local OCI archive and pushes it ([why](#failed-to-package-kernel--connection-reset-by-peer)):
+
+```bash
+unikraft build infrastructure/unikraft/openfga --output ./openfga.oci.tar
 unikraft images copy ./openfga.oci.tar unikraft.io/<org>/demo-fga-openfga:latest
 ```
 
-The script builds to a local OCI archive and then pushes it. A direct `unikraft build --output <org>/<image>` streams the `base-compat` runtime from S3 into the registry upload, and on slow or VPN links S3 resets that connection (`failed to package kernel … connection reset by peer`).
-
-The postgres image compiles PostgreSQL from source for x86_64; on an Apple Silicon Mac that runs under emulation and takes a while the first time.
+The postgres image compiles PostgreSQL 16.4 from source for x86_64; on Apple Silicon that runs under emulation and took 11.5 minutes the first time.
 
 ### Deploy
 
@@ -250,7 +134,7 @@ The postgres image compiles PostgreSQL from source for x86_64; on an Apple Silic
 ./scripts/deploy.sh api       # public HTTPS, 512MiB, scale-to-zero on (5s cooldown)
 ```
 
-What it runs, shown as flags (the script passes the same fields via `--load` to keep secrets off argv):
+What it runs, shown as flags. The script passes the same fields with `unikraft run --load <0600 YAML>` so secrets never appear on the command line:
 
 ```bash
 unikraft volumes create --metro fra --name demo-fga-pgdata --size 512MiB
@@ -275,17 +159,16 @@ unikraft run --metro fra -n demo-fga-api --image <org>/demo-fga-api:latest \
   -e FGA_API_URL=http://demo-fga-openfga.internal:8080 -e FGA_KEY=...
 ```
 
-Inspect them (private IP under `networks`):
+Inspect without printing secrets (private IP under `networks`):
 
 ```bash
 unikraft instances list
 unikraft instances get demo-fga-openfga -f name,state,networks,service
-unikraft instances logs demo-fga-openfga
 ```
 
-### Seed and Test Through the Tunnel
+### Seed and test through the tunnel
 
-`unikraft instances tunnel` forwards a local port to an unexposed instance via a temporary relay instance on the internal network:
+`unikraft instances tunnel` forwards a local port to an unexposed instance through a temporary relay instance:
 
 ```bash
 ./scripts/tunnel.sh           # terminal 1: localhost:18080 -> demo-fga-openfga:8080
@@ -293,50 +176,151 @@ unikraft instances logs demo-fga-openfga
 ./scripts/test-remote.sh      # fga model test against the deployed store
 ```
 
-`fga model test` only queries a server when the test file has no `model_file` (otherwise it runs an embedded OpenFGA), so `test-remote.sh` strips that line and runs the tests against the store's latest model with the test tuples as contextual tuples.
-
 ### Verify
 
 ```bash
 ./scripts/verify.sh
 ```
 
-It calls the public API:
+It calls the public API (`/health`, `/check` allowed and denied, three `/bench` runs) and checks that OpenFGA and Postgres have no service, that only the API has a public domain, and that ports 8080/8081/3000/2112/5432 don't answer. It exits non-zero if any check fails.
 
-- `GET /health`: API status, OpenFGA reachability, and what `demo-fga-openfga.internal` resolves to.
+API endpoints:
+
+- `GET /health`: API status, OpenFGA reachability, what `demo-fga-openfga.internal` resolves to, and process memory.
 - `GET /check?user=user:alice&relation=can_edit&object=project:roadmap`: one Check.
-- `GET /bench`: 100 sequential Checks (after 3 warm-up calls), returns p50/p95/max in ms.
-
-It also confirms OpenFGA and Postgres have no service and that ports 8080/8081/3000/2112/5432 don't answer on the public FQDN. See [docs/RESULTS.md](docs/RESULTS.md) for recorded results.
+- `GET /bench[?n=100&user=&relation=&object=]`: up to 100 sequential Checks after 3 warm-up calls; returns p50/p95/max/min/mean in ms.
 
 ### Redeploy
 
-Never restart in place; delete and run again. The volume (and so the store, model and tuples) survives:
+Never restart in place; delete and run again. The volume, and so the store, model and tuples, survives:
 
 ```bash
-./scripts/cleanup.sh && ./scripts/deploy.sh postgres && ./scripts/deploy.sh openfga && ./scripts/deploy.sh api
+./scripts/cleanup.sh && ./scripts/deploy.sh
 ```
 
-### Clean Up
+To compare against the database path, redeploy OpenFGA alone with its check cache off: delete `demo-fga-openfga`, then `OPENFGA_CHECK_QUERY_CACHE_ENABLED=false ./scripts/deploy.sh openfga`.
 
-Removes only `demo-fga-*` resources:
+### Clean up
+
+Removes only `demo-fga-*` resources and exits non-zero if a delete fails:
 
 ```bash
-./scripts/cleanup.sh          # instances only (keeps volume and images)
-./scripts/cleanup.sh --all    # also the demo-fga-pgdata volume and the <org>/demo-fga-* images
-# equivalent to:
-unikraft instances delete demo-fga-api
-unikraft instances delete demo-fga-openfga
-unikraft instances delete demo-fga-postgres
-unikraft volumes delete demo-fga-pgdata
+./scripts/cleanup.sh          # instances only (keeps the volume and images)
+./scripts/cleanup.sh --all    # also the demo-fga-pgdata volume (drops the data) and the <org>/demo-fga-* images
+```
+
+By hand, keep the output quiet: `delete` prints the instance, environment included.
+
+```bash
+unikraft instances delete demo-fga-api -o quiet
+unikraft instances delete demo-fga-openfga -o quiet
+unikraft instances delete demo-fga-postgres -o quiet
+unikraft volumes delete demo-fga-pgdata -o quiet
 unikraft images delete <org>/demo-fga-api:latest
-unikraft images delete <org>/demo-fga-openfga:latest
-unikraft images delete <org>/demo-fga-postgres:latest
 ```
+
+## Patterns to copy
+
+| Pattern | Where | Why |
+| --- | --- | --- |
+| Private service + public API over `<name>.internal` | [`scripts/deploy.sh`](scripts/deploy.sh), [`api/server.ts`](api/server.ts) | No public port on the backend; names survive redeploys, IPs don't. |
+| Secrets through `unikraft run --load` | [`scripts/deploy.sh`](scripts/deploy.sh) | `-e KEY=VALUE` puts secrets in the process list; a 0600 YAML spec doesn't. |
+| Pin the CLI profile in scripts | [`scripts/env.sh`](scripts/env.sh) | Scripts can't act on another account just because a different profile is active. |
+| Resource-name prefix guard | [`scripts/cleanup.sh`](scripts/cleanup.sh) | Cleanup refuses to touch anything outside `demo-fga-*` on a shared account. |
+| Two-step build: local OCI archive, then push | [`scripts/build.sh`](scripts/build.sh) | Avoids `failed to package kernel … connection reset by peer`. |
+| One-off migration instance on the private network | [`scripts/deploy.sh`](scripts/deploy.sh) | No database port exposed for migrations; the deploy stops unless it exits 0. |
+| `fga model test` against a deployed store | [`scripts/test-remote.sh`](scripts/test-remote.sh) | The same test files run locally and against production data paths. |
+| Store lookup by name with a short cache | [`api/server.ts`](api/server.ts) | Recreated stores are picked up without restarting the API. |
+
+## Gotchas
+
+### Private IPs change on every redeploy, and get reused
+
+After a delete-and-run, OpenFGA's old IP belonged to Postgres. Anything pinned to a private IP silently talks to the wrong service. Use `<instance-name>.internal`.
+
+### `unikraft instances get`, `wait`, `delete` and `list -o json` print secrets
+
+They include `runtime.env` (passwords, keys) unless output is limited. Use `-f name,state,networks` or `-o quiet`.
+
+### `unikraft run -e` only accepts `KEY=VALUE`
+
+So the secret is on the command line. Describe the instance in a 0600 YAML file and pass `--load` (generate the schema with `unikraft run … --dry-run --save spec.yaml`, using dummy values). `--load` replaces all flags; it doesn't merge with them.
+
+### `failed to package kernel … connection reset by peer`
+
+`unikraft build --output <org>/<image>` streams the `base-compat` runtime from S3 straight into the registry upload; on slow or VPN links S3 resets the download. Build to a local archive, then `unikraft images copy` it.
+
+### `dockerfile context does not exist`
+
+`rootfs.source` is resolved relative to the Kraftfile. Keep the Dockerfile next to its Kraftfile.
+
+### `fga model test` passes with the server down
+
+If a test file has `model_file`, the CLI runs an embedded OpenFGA and never contacts the server. Remove that line and pass `--store-id` to test a deployed store ([`scripts/test-remote.sh`](scripts/test-remote.sh)).
+
+### `fga model test --tests a.yaml b.yaml` runs only the first file
+
+`--tests` takes one path or glob: `fga model test --tests 'authz/models/*.fga.yaml'`.
+
+### A deleted OpenFGA store still answers checks
+
+OpenFGA soft-deletes stores, so a cached store ID keeps returning answers from the old store. The API re-resolves the store every 30 s and immediately when OpenFGA reports it has no model.
+
+### The public URL changes on every `unikraft run`
+
+Each run creates a new service with a random FQDN. For a stable name, create the service once with `unikraft services create` and attach instances with `--service`.
+
+### Tunnels create relay instances
+
+`unikraft instances tunnel` starts a `utils/tunnel` instance (128 MiB, random `inst-*` name) that counts against your quota and is removed when the tunnel closes.
+
+## Authorization models
+
+The modules live in `authz/models/` and run unchanged locally and on Unikraft:
+
+- `fga.mod`: manifest listing the modules.
+- `projects.fga`: users, projects and lists with hierarchical sharing.
+- `tasks.fga`: tasks that inherit rights from their parent lists.
+
+With `FGA_API_URL`, `FGA_API_TOKEN` and `FGA_STORE_ID` exported (see [Quick start](#quick-start-local)):
+
+```bash
+fga model write --file authz/models/fga.mod     # new authorization_model_id per write
+fga model get                                   # the combined model
+fga model test --tests 'authz/models/*.fga.yaml'   # expect Tests 10/10, Checks 31/31
+fga model transform --file authz/models/fga.mod > model.json   # combined model as JSON
+```
+
+To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<name>.fga.yaml` tests beside it, and write the model again.
+
+## Repository layout
+
+- `authz/` – local Docker Compose stack (PostgreSQL, OpenFGA, Caddy, Playground).
+- `authz/models/` – FGA modules and their tests.
+- `authz/seed/tuples.yaml` – synthetic tuples for the demo store.
+- `api/` – public demo API (Node.js 24, TypeScript run natively), its tests, Kraftfile and Dockerfile.
+- `infrastructure/unikraft/openfga/` – OpenFGA Kraftfile and Dockerfile (static Go build).
+- `infrastructure/unikraft/postgres/` – PostgreSQL Kraftfile and rootfs, from the [Unikraft examples](https://github.com/unikraft-cloud/examples/tree/main/postgres) (see [NOTICE](NOTICE)).
+- `scripts/` – `unikraft` CLI wrappers: build, deploy, tunnel, seed, test-remote, verify, cleanup.
+- `docs/RESULTS.md` – measured results on Unikraft Cloud. `docs/1-*.md` and `docs/2-*.md` are historical notes from the legacy `kraft cloud` setup.
+- `AGENTS.md` – context for AI coding agents.
+
+## Development
+
+```bash
+fga model test --tests 'authz/models/*.fga.yaml'
+cd api && npm ci && npm run typecheck && npm test
+```
+
+CI runs these, plus `shellcheck` on the scripts, a Compose config check and a build of the API rootfs.
 
 ## Reference
 
 - [unikraft CLI](https://unikraft.com/docs/cli/unikraft)
 - [Migrating from kraft cloud](https://unikraft.com/docs/tutorials/kraftkit-to-unikraft)
 - [Unikraft networking](https://unikraft.com/docs/platform/networking)
-- [OpenFGA CLI docs](https://openfga.dev/docs/getting-started/cli)
+- [OpenFGA documentation](https://openfga.dev/docs) and [CLI](https://openfga.dev/docs/getting-started/cli)
+
+## License
+
+Apache-2.0, see [LICENSE](LICENSE). Third-party files keep their own terms, see [NOTICE](NOTICE).
