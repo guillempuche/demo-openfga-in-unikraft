@@ -69,7 +69,7 @@ All times in ms. `/check`: alice → `allowed: true`, mallory → `allowed: fals
 | OpenFGA through tunnel, no `Authorization` | `401` `bearer_token_missing` |
 | OpenFGA through tunnel, wrong key | `401` |
 
-OpenFGA listens on 8080 (HTTP), 8081 (gRPC) and 2112 (metrics); the Playground (3000) is disabled. None of these ports is published, and the API's FQDN is the only public name in the deployment. Private IPs (`10.0.6.x`) aren't routable from the internet.
+OpenFGA listens on 8080 (HTTP), 8081 (gRPC) and 2112 (metrics); the Playground (3000) is disabled. None of these ports is published, and the API's FQDN is the only public name in the deployment while no tunnel is open (see [section 5](#5-model-tests-through-the-tunnel) for tunnel relays). Private IPs (`10.0.6.x`) aren't routable from the internet.
 
 ## 4. Redeploy (delete + run, never restart)
 
@@ -104,7 +104,7 @@ OpenFGA listens on 8080 (HTTP), 8081 (gRPC) and 2112 (metrics); the Playground (
 
 `fga model test` only queries the server when the test file has no `model_file`, so `test-remote.sh` strips that line. Locally, the same command doesn't pass with the server stopped, which confirms remote mode.
 
-The tunnel creates a relay instance (`utils/tunnel`, 128MiB, random name such as `inst-s60mq`) and removes it when the tunnel closes; verified for both tunnels used here.
+The tunnel creates a relay instance (`utils/tunnel`, 128MiB, random name such as `inst-s60mq`) and removes it when the tunnel closes; verified for every tunnel used here. While open, the relay has its own public FQDN: plain HTTPS to it returns the platform's "Service not found" page, not OpenFGA, and the CLI's relay protocol (which carries the tunnel) wasn't examined. Close tunnels when done; `scripts/verify.sh` now fails while one is open.
 
 ## 6. Memory and cost
 
@@ -137,8 +137,8 @@ All three images rebuilt from `infrastructure/unikraft/` (after the folder renam
 | API RSS | 26.1 MiB | 26.1 MiB |
 
 - The rebuilt API runs the restructured module (`createApp`, listen only when run directly) correctly in the unikernel.
-- `verify.sh` now lists every instance with a public domain. While a tunnel is open, its relay instance (`inst-*`, image `utils/tunnel`) also has a public FQDN. Plain HTTPS to it returns the platform's "Service not found" page, not OpenFGA; the tunnel itself uses the CLI's relay protocol, whose authentication wasn't examined here. The relay disappears when the tunnel closes.
-- The Postgres rebuild took about a minute: the WAL cap lives in the Kraftfile `cmd`, so Docker reused the cached layers.
+- The first-deploy `verify.sh` run happened while a tunnel was open; listing public domains surfaced the relay's public FQDN (see [section 5](#5-model-tests-through-the-tunnel)). That version of `verify.sh` only listed it and passed; it now fails while a relay is public. The after-redeploy run had no tunnel open.
+- The Postgres rebuild was fast because the WAL cap lives in the Kraftfile `cmd`, not the Dockerfile: a later local rebuild showed 41 `CACHED` steps and took 19 s. A cold build still compiles PostgreSQL from source (11.5 min).
 
 ## Build notes
 

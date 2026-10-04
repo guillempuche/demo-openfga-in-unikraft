@@ -3,7 +3,7 @@
 [![CI](https://github.com/guillempuche/demo-openfga-in-unikraft/actions/workflows/ci.yml/badge.svg)](https://github.com/guillempuche/demo-openfga-in-unikraft/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grained, relationship-based authorization) on [Unikraft Cloud](https://unikraft.com) unikernels. OpenFGA and PostgreSQL run as **private** instances, reachable only over Unikraft's internal network (`<name>.internal`); a small **public** Node.js/TypeScript API sits in front. Measured on Unikraft Cloud: **~1 ms p50** authorization checks from the API to OpenFGA, under 30 MiB of memory each for OpenFGA and the API, and the model tests passing against the deployed store. The same models run locally with Docker Compose.
+Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grained, relationship-based authorization) on [Unikraft Cloud](https://unikraft.com) unikernels. OpenFGA and PostgreSQL run as **private** instances with no public service, reached over Unikraft's internal network (`<name>.internal`); a small **public** Node.js/TypeScript API sits in front. Measured on Unikraft Cloud: **~1 ms p50** authorization checks from the API to OpenFGA, under 30 MiB of memory each for OpenFGA and the API, and the model tests passing against the deployed store. The same models run locally with Docker Compose.
 
 ## At a glance
 
@@ -41,7 +41,7 @@ internet ──HTTPS──▶ demo-fga-api (public, 443→8080)
                     demo-fga-postgres (no published ports, volume demo-fga-pgdata)
 ```
 
-- Every instance gets a private IP and a private FQDN `<instance-name>.internal` on the account's internal network ([docs](https://unikraft.com/docs/platform/networking)). OpenFGA and Postgres publish no service, so none of their ports (8080 HTTP, 8081 gRPC, 3000 Playground, 2112 metrics, 5432) are reachable from the internet. Internal traffic is unencrypted but never leaves the account's network.
+- Every instance gets a private IP and a private FQDN `<instance-name>.internal` on the account's internal network ([docs](https://unikraft.com/docs/platform/networking)). OpenFGA and Postgres publish no service, so none of their ports (8080 HTTP, 8081 gRPC, 3000 Playground, 2112 metrics, 5432) are reachable from the internet. The exception is an open `unikraft instances tunnel`, whose relay is publicly addressable ([details](#tunnels-create-publicly-addressable-relay-instances)). Internal traffic is unencrypted but never leaves the account's network.
 - OpenFGA requires a preshared key (`OPENFGA_AUTHN_METHOD=preshared`). The Playground is disabled in the cloud.
 - The API ([`api/server.ts`](api/server.ts)) finds OpenFGA by `.internal` name and the store by name (`demo-fga`), so it needs no IP or store ID and survives redeploys without config changes.
 - Postgres keeps its data on a 512 MiB volume that survives instance deletion.
@@ -182,7 +182,7 @@ unikraft instances get demo-fga-openfga -f name,state,networks,service
 ./scripts/verify.sh
 ```
 
-It calls the public API (`/health`, `/check` allowed and denied, three `/bench` runs) and checks that OpenFGA and Postgres have no service, that only the API has a public domain, and that ports 8080/8081/3000/2112/5432 don't answer. It exits non-zero if any check fails.
+It calls the public API (`/health`, `/check` allowed and denied, three `/bench` runs) and checks that OpenFGA and Postgres have no service, that no `demo-fga-*` instance other than the API and no open tunnel relay has a public domain (other workloads on the account are ignored), and that ports 8080/8081/3000/2112/5432 don't answer. It exits non-zero if any check fails.
 
 API endpoints:
 
@@ -270,9 +270,9 @@ OpenFGA soft-deletes stores, so a cached store ID keeps returning answers from t
 
 Each run creates a new service with a random FQDN. For a stable name, create the service once with `unikraft services create` and attach instances with `--service`.
 
-### Tunnels create relay instances
+### Tunnels create publicly addressable relay instances
 
-`unikraft instances tunnel` starts a `utils/tunnel` instance (128 MiB, random `inst-*` name) that counts against your quota, has its own public FQDN while open (plain HTTPS to it returns "Service not found", not your service), and is removed when the tunnel closes. Close tunnels when you're done.
+`unikraft instances tunnel` starts a `utils/tunnel` instance (128 MiB, random `inst-*` name) that counts against your quota and has its own public FQDN while the tunnel is open. Plain HTTPS to that FQDN returns "Service not found", not your service; the tunnel traffic itself uses the CLI's relay protocol, whose authentication this demo didn't examine. The relay is removed when the tunnel closes, so close tunnels when you're done; `scripts/verify.sh` fails while one is open.
 
 ## Authorization models
 
