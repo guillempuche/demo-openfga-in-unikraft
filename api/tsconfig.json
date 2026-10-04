@@ -8,7 +8,12 @@
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["server.ts"]
+  "include": [
+    "server.ts",
+    "server.test.ts"
+  ]
 }

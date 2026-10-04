@@ -8,18 +8,15 @@
 //   GET /bench[?n=100&user=&relation=&object=]  n (<= 100) sequential checks, latency stats
 
 import { lookup } from 'node:dns/promises'
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { realpathSync } from 'node:fs'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { fileURLToPath } from 'node:url'
 
 const PORT = Number(process.env.PORT ?? 8080)
 // Private FQDN of the OpenFGA instance on the Unikraft internal network.
 const FGA_API_URL = (process.env.FGA_API_URL ?? 'http://demo-fga-openfga.internal:8080').replace(/\/$/, '')
 const FGA_KEY = process.env.FGA_KEY ?? ''
 const FGA_STORE_NAME = process.env.FGA_STORE_NAME ?? 'demo-fga'
-
-if (!FGA_KEY) {
-  console.error('FGA_KEY is required')
-  process.exit(1)
-}
 
 const authHeaders = {
   authorization: `Bearer ${FGA_KEY}`,
@@ -198,8 +195,24 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 }
 
-createServer((req, res) => {
-  handle(req, res).catch((err: Error) => send(res, 502, { error: err.message }))
-}).listen(PORT, '0.0.0.0', () => {
-  console.log(`demo-fga-api listening on :${PORT}, OpenFGA at ${FGA_API_URL}`)
-})
+// The HTTP server, not yet listening, so tests can start it on a free port.
+export function createApp(): Server {
+  return createServer((req, res) => {
+    handle(req, res).catch((err: Error) => send(res, 502, { error: err.message }))
+  })
+}
+
+// Listen only when run directly (`node server.ts`), not when a test imports
+// this module. Compares real paths rather than using import.meta.main, which
+// Node 22 doesn't have.
+const isMain = process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+
+if (isMain) {
+  if (!FGA_KEY) {
+    console.error('FGA_KEY is required')
+    process.exit(1)
+  }
+  createApp().listen(PORT, '0.0.0.0', () => {
+    console.log(`demo-fga-api listening on :${PORT}, OpenFGA at ${FGA_API_URL}`)
+  })
+}
