@@ -1,114 +1,135 @@
 # Results: private OpenFGA + public API on Unikraft Cloud
 
-Org `kybrion` (profile pinned via `UNIKRAFT_PROFILE`), metro `fra`. CLI: `unikraft` 0.5.2.
+Run on 2026-10-04. Org `kybrion` (profile pinned via `UNIKRAFT_PROFILE`), metro `fra`, `unikraft` CLI 0.5.2, OpenFGA v1.11.0, PostgreSQL 16.4. Everything (database, OpenFGA, API) runs on Unikraft Cloud; no other hosting provider is involved. Synthetic data only (`authz/seed/tuples.yaml`).
 
-**Status (2026-10-02): code ready and verified locally; the cloud run hasn't been done yet.**
-Every cloud item below is **NOT RUN**. Fill each one in from the command next to it.
+## Summary
 
-## Verified locally
-
-| Check | Result |
-| --- | --- |
-| `unikraft build infrastructure/kraftcloud/openfga` (fixed Kraftfile, spec v0.7) | ✅ built in ~2 min to a local OCI archive. Before the fix: `dockerfile context does not exist`. |
-| `fga model test` (embedded, `model_file`) | ✅ projects 5/5 tests, 15/15 checks |
-| `fga model test` remote mode against a running OpenFGA (`scripts/test-remote.sh`) | ✅ 10/10 tests, 31/31 checks (projects + tasks). With the server stopped it doesn't pass, which confirms remote mode. |
-| OpenFGA (preshared auth) call without the key | ✅ `401` |
-| API `/check` allowed / denied | ✅ `alice can_edit project:roadmap` → `true`; `mallory` → `false` |
-| API `/bench` (local Docker, check cache on) | p50 0.995 ms, p95 2.383 ms, max 4.363 ms (n=100) |
-| `scripts/seed.sh` idempotency | ✅ second run rewrites the model and tuples without errors |
-| `scripts/deploy.sh` rendered specs (`unikraft run --load … --dry-run`, dummy secrets) | ✅ OpenFGA: no service, `scale-to-zero policy=off`, 512MiB. API: `443:8080/http+tls`, `80:443/http+redirect`, 512MiB |
-
-The `demo-fga-api` unikernel image hasn't been built with `unikraft build` yet; the server itself ran locally with Node 24. The image follows the official `httpserver-node26` example shape (Node 24 binary + musl in a scratch rootfs).
-
-## Cloud tests
-
-### 1. Both instances running, private IP and `.internal` name: NOT RUN
-
-```bash
-./scripts/deploy.sh openfga && ./scripts/deploy.sh api
-unikraft instances get demo-fga-openfga -f name,state,networks,service
-unikraft instances get demo-fga-api -f name,state,networks,service.domains
-```
-
-Note: `unikraft instances get` exposes `networks.*.private-ip` but has **no field for the private FQDN**, so it won't show the `.internal` name. The private FQDN is `<instance-name>.internal` by platform convention ([networking docs](https://unikraft.com/docs/platform/networking)). The API's `/health` returns what `demo-fga-openfga.internal` resolves to from inside the network, so it can be compared with the private IP.
-
-| Field | demo-fga-openfga | demo-fga-api |
+| # | Test | Result |
 | --- | --- | --- |
-| state | | |
-| private IP | | |
-| `.internal` resolves to (from `/health`) | | n/a |
-| public FQDN | none | |
+| 1 | Instances running, private IP and `.internal` name | ✅ |
+| 2 | API → OpenFGA over `.internal`, `/bench` p50 < 10 ms warm | ✅ p50 1.0–1.3 ms |
+| 3 | No OpenFGA (or Postgres) port reachable from the internet; no key → rejected | ✅ |
+| 4 | Redeploy (delete + run): IPs change, `.internal` keeps working with no config change | ✅ IPs changed and were reused across instances |
+| 5 | `fga model test` against the deployed instance through the tunnel | ✅ 10/10 tests, 31/31 checks (before and after redeploy) |
+| 6 | Memory and monthly cost | 1.5 GiB allocated, ~1 GiB active; see below |
 
-### 2. API → OpenFGA over `.internal`; `/bench` p50 < 10 ms warm: NOT RUN
+## 1. Instances, private IPs and `.internal`
 
 ```bash
-./scripts/verify.sh
+unikraft instances list -f name,state,resources.memory,resources.vcpus,image
+unikraft instances get demo-fga-openfga -f name,state,networks,service
 ```
 
-| Run | p50 | p95 | max |
+First deploy:
+
+| Instance | State | Private IP | Public FQDN |
 | --- | --- | --- | --- |
-| 1 | | | |
-| 2 | | | |
-| 3 | | | |
+| `demo-fga-postgres` | running | 10.0.6.89 | none |
+| `demo-fga-openfga` | running | 10.0.6.137 | none |
+| `demo-fga-api` | running → standby when idle | 10.0.6.149 | `morning-tree-fun8q86w.fra.unikraft.app` |
 
-`OPENFGA_CHECK_QUERY_CACHE_ENABLED=true` is set (default TTL 10 s), so a warm repeated Check is served from OpenFGA's memory and mostly measures the API→OpenFGA hop on the internal network. To measure with a Neon round-trip on every Check, redeploy OpenFGA with `OPENFGA_CHECK_QUERY_CACHE_ENABLED=false ./scripts/deploy.sh openfga`.
+`unikraft instances get` shows the private IP (`networks.*.private-ip`), but it has **no field for the private FQDN**, so the `.internal` name never appears in CLI output. The name is `<instance-name>.internal` by platform convention, and the deployment proves it resolves:
 
-### 3. No OpenFGA port reachable from the internet; no key → rejected: NOT RUN
+- `demo-fga-migrate` and `demo-fga-openfga` reached Postgres at `demo-fga-postgres.internal:5432`.
+- The API's `/health` reports `"openfgaHost":"demo-fga-openfga.internal","resolved":"10.0.6.137"`, which is exactly OpenFGA's private IP.
+
+## 2. API → OpenFGA over `.internal`, latency
 
 ```bash
-./scripts/verify.sh                                  # service of demo-fga-openfga + ports 8080/8081/3000/2112 on the public FQDN
-./scripts/tunnel.sh &                                # then, without a key:
-curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:18080/stores/<store-id>/check \
-  -d '{"tuple_key":{"user":"user:alice","relation":"owner","object":"project:roadmap"}}'   # expect 401
+./scripts/verify.sh      # /health, /check, 3 × /bench (n=100, 3 warm-up calls)
 ```
+
+`/bench` times each Check from the API instance to OpenFGA over the internal network (HTTP, keep-alive, preshared key).
+
+| Run | Config | Check | p50 | p95 | max |
+| --- | --- | --- | --- | --- | --- |
+| first deploy | cache on | alice `can_edit` project:roadmap (direct) | 1.322 | 2.146 | 5.287 |
+| first deploy | cache on | same | 1.160 | 2.398 | 2.841 |
+| first deploy | cache on | same | 1.108 | 1.802 | 3.196 |
+| after redeploy | cache on | same | 1.322 | 2.050 | 7.999 |
+| after redeploy | cache on | same | 1.037 | 2.236 | 2.997 |
+| after redeploy | cache on | same | 1.074 | 1.612 | 3.439 |
+| OpenFGA redeployed | **cache off** | same (1 DB query) | 1.469–1.753 | 2.334–3.955 | 2.834–11.884 |
+| OpenFGA redeployed | **cache off** | bob `can_view` list:backlog (multi-hop) | **40.218** | 60.630 | 100.351 (min 3.08) |
+| OpenFGA redeployed | cache on | bob `can_view` list:backlog | 1.400 | 4.497 | 9.171 |
+
+All times in ms. `/check`: alice → `allowed: true`, mallory → `allowed: false`.
+
+- **The p50 < 10 ms target holds by a wide margin:** about 1.1 ms warm, and about 1.5 ms even with OpenFGA's check cache off for a direct check, which includes one Postgres round trip over `.internal`.
+- **Open item:** an uncached multi-hop check (list → project → role) has a p50 of about 40 ms but a minimum of 3 ms. That pattern looks like a per-round-trip stall such as TCP delayed-ACK rather than slow queries; it's not investigated. With the default check cache, warm multi-hop checks are about 1.4 ms.
+- **Public latency from the test machine is about 117 ms per request on a keep-alive connection**, which equals the ping RTT (121–143 ms over a VPN). Server time is negligible next to the client link. A fresh TLS connection adds about 0.3–0.9 s from this machine.
+
+## 3. Exposure and authentication
 
 | Check | Result |
 | --- | --- |
-| `demo-fga-openfga` service | |
-| public FQDN :8080 / :8081 / :3000 / :2112 | |
-| tunnel call without key | |
+| `demo-fga-openfga` service | none (`{"domains":[],"name":""}`) |
+| `demo-fga-postgres` service | none |
+| Public FQDN `:8080`, `:8081`, `:3000`, `:2112`, `:5432` | no answer (`000`), before and after redeploy |
+| OpenFGA through tunnel, no `Authorization` | `401` `bearer_token_missing` |
+| OpenFGA through tunnel, wrong key | `401` |
 
-### 4. Redeploy (delete + run, never restart): NOT RUN
+OpenFGA listens on 8080 (HTTP), 8081 (gRPC) and 2112 (metrics); the Playground (3000) is disabled. None of these ports is published, and the API's FQDN is the only public name in the deployment. Private IPs (`10.0.6.x`) aren't routable from the internet.
+
+## 4. Redeploy (delete + run, never restart)
 
 ```bash
-unikraft instances get demo-fga-openfga -f networks      # IP before
-./scripts/cleanup.sh && ./scripts/deploy.sh
-unikraft instances get demo-fga-openfga -f networks      # IP after
-curl -s https://<api-fqdn>/health                        # resolved + openfga ok, no config change
+./scripts/cleanup.sh            # deletes the instances, keeps volume demo-fga-pgdata
+./scripts/deploy.sh             # postgres → migrate → openfga → api, 32 s
 ```
 
-| Question | Answer |
-| --- | --- |
-| Private IP before / after | |
-| Did it change? | |
-| `.internal` resolves after redeploy without config changes? | |
+| Instance | IP before | IP after redeploy | After OpenFGA-only redeploys |
+| --- | --- | --- | --- |
+| `demo-fga-postgres` | 10.0.6.89 | 10.0.6.137 | — |
+| `demo-fga-openfga` | 10.0.6.137 | 10.0.6.149 | 10.0.6.89 → 10.0.6.149 |
+| `demo-fga-api` | 10.0.6.149 | 10.0.6.93 | — |
 
-The API holds no IP or store ID; it uses `demo-fga-openfga.internal` and looks up the store by name. Neon keeps the store, model and tuples across redeploys.
+- **Private IPs change on every redeploy and are reused across instances.** After the redeploy, OpenFGA's old IP belonged to Postgres, so a hard-coded IP would silently reach the wrong service.
+- **`.internal` keeps working with no config change.** `/health` resolved `demo-fga-openfga.internal` to the new IP each time (`10.0.6.149`, then `10.0.6.89`, then `10.0.6.149`). The API kept running across the OpenFGA-only redeploys and picked up the new address immediately.
+- **Data persisted on the volume:** the migration found schema version 6 and did nothing, the store ID stayed `01M43PKQXFJA20RGHBE6BJ9DHE`, and all checks returned the same answers.
+- **The public FQDN changed** (`morning-tree-fun8q86w` → `old-water-qgiq6eot`) because each `run` creates a new service. For a stable public name, create a service once (`unikraft services create`) and attach with `--service`.
 
-### 5. `fga model test` against the deployed instance through the tunnel: NOT RUN
+## 5. Model tests through the tunnel
 
 ```bash
-./scripts/tunnel.sh        # terminal 1
-./scripts/seed.sh          # terminal 2 (first time only)
+./scripts/tunnel.sh             # terminal 1: localhost:18080 → fra/demo-fga-openfga:8080
+./scripts/seed.sh               # first time only: store demo-fga, model, 5 tuples
 ./scripts/test-remote.sh
 ```
 
-Result:
-
-### 6. Memory and monthly cost estimate
-
-| Item | Value |
+| When | Result |
 | --- | --- |
-| Requested memory | 512MiB (OpenFGA) + 512MiB (API) = **1 GiB** |
-| Quota after deploy | 6/8 instances, ~6.8/8.0 GiB (was 4 instances, 5.8 GiB). `tunnel` adds a temporary relay instance while it runs. |
-| Measured memory use | NOT RUN (check `unikraft quotas` / logs after deploy) |
-| Unikraft cost | Team plan is a flat **$39/month** for 8 running instances / 8 vCPU / 8 GiB ([pricing](https://unikraft.com/pricing)). Both instances fit inside that quota, so the expected **marginal cost is $0/month**. The pricing page doesn't state any per-usage billing inside the quota; confirm on the invoice. |
-| Neon | Billed separately on the Neon plan (not included above). |
+| First deploy | Tests 10/10, Checks 31/31 |
+| After redeploy | Tests 10/10, Checks 31/31 |
+
+`fga model test` only queries the server when the test file has no `model_file`, so `test-remote.sh` strips that line. Locally, the same command doesn't pass with the server stopped, which confirms remote mode.
+
+The tunnel creates a relay instance (`utils/tunnel`, 128MiB, random name such as `inst-s60mq`) and removes it when the tunnel closes; verified for both tunnels used here.
+
+## 6. Memory and cost
+
+| Instance | Allocated | Measured |
+| --- | --- | --- |
+| `demo-fga-postgres` | 512MiB, 1 vCPU, volume 512MiB (14% used) | — |
+| `demo-fga-openfga` | 512MiB, 1 vCPU | RSS 17.6 MiB, Go heap in use 13.4 MiB (Prometheus metrics via tunnel) |
+| `demo-fga-api` | 512MiB, 1 vCPU, scale-to-zero (5 s cooldown) | RSS 26.0 MiB, heap 12.2 MiB (`/health`) |
+| tunnel relay (only while tunnelling) | 128MiB | — |
+
+- Quota in steady state: 2 active instances (the API is in standby when idle), 1.0 GiB active of 4.0 GiB, 512MiB of 1 GiB volume space. With the API awake it's 3 instances and 1.5 GiB.
+- The allocations are generous: OpenFGA and the API each use under 30 MiB. Both could likely run at 128–256MiB.
+- **Cost:** Unikraft prices plans as flat monthly fees with included quotas ([pricing](https://unikraft.com/pricing): Hobby $0 for 2 running instances / 4 GiB; Team $39/month for 8 running / 8 GiB). The `kybrion` quota (16 instances, 4 GiB, 1 vCPU per instance) doesn't match a published plan, so its fee isn't known from here. The demo stays inside that quota, so the expected **marginal cost is $0/month**. Note that on Hobby, the 2-running-instance cap would be hit whenever the API wakes, so Team is the smallest published plan that fits.
+
+## Build notes
+
+- Building OpenFGA from its Kraftfile failed with `dockerfile context does not exist` until the `rootfs` path was fixed.
+- `unikraft build --output <org>/<image>` failed 6/6 times with `failed to package kernel … connection reset by peer`. S3 resets the runtime download while it's streamed into the registry upload (the test machine is on a VPN, MTU 1420). Building to a local OCI archive and then `unikraft images copy` works; `scripts/build.sh` does that.
+- The Postgres image compiles PostgreSQL from source under amd64 emulation on Apple Silicon: 11.5 min the first time. Pushing over the VPN took up to about 10 min per image.
+- `unikraft instances get`, `wait` and `delete` print `runtime.env` (secrets) unless output is limited. The scripts use `-f` field selection or `-o quiet`.
 
 ## Cleanup (only `demo-fga-*`)
 
 ```bash
-./scripts/cleanup.sh            # unikraft instances delete demo-fga-api demo-fga-openfga
-./scripts/cleanup.sh --images   # also delete the <org>/demo-fga-* images
-unikraft instances list         # confirm no tunnel relay instance is left behind
+./scripts/cleanup.sh            # instances: demo-fga-api, demo-fga-openfga, demo-fga-postgres
+./scripts/cleanup.sh --all      # also volume demo-fga-pgdata and images kybrion/demo-fga-*
+unikraft instances list         # confirm nothing (including tunnel relays) is left
 ```
