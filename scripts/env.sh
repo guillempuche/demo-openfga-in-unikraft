@@ -16,7 +16,18 @@ if [[ -f "$ROOT/.env" ]]; then
   set +a
 fi
 
-UNIKRAFT_ORG="${UNIKRAFT_ORG:-gaaaa}"
+# Pin the CLI profile explicitly so these scripts never act on whichever
+# profile happens to be active (the CLI reads $UNIKRAFT_PROFILE).
+if [[ -z "${UNIKRAFT_PROFILE:-}" ]]; then
+  echo "error: UNIKRAFT_PROFILE is not set (add it to $ROOT/.env, see .env.example)" >&2
+  exit 1
+fi
+export UNIKRAFT_PROFILE
+if ! unikraft profile list 2>/dev/null | awk 'NR > 1 {print $1}' | grep -qx "$UNIKRAFT_PROFILE"; then
+  echo "error: unikraft profile '$UNIKRAFT_PROFILE' not found; run: unikraft login --organization $UNIKRAFT_PROFILE --token -" >&2
+  exit 1
+fi
+UNIKRAFT_ORG="${UNIKRAFT_ORG:-$UNIKRAFT_PROFILE}"
 UNIKRAFT_METRO="${UNIKRAFT_METRO:-fra}"
 
 # Every cloud resource this demo creates is prefixed with demo-fga-; the

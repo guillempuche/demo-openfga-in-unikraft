@@ -1,6 +1,6 @@
 # Results: private OpenFGA + public API on Unikraft Cloud
 
-Account `gaaaa`, metro `fra`, Team plan (8 instances / 8 vCPU / 8 GiB). CLI: `unikraft` 0.5.2.
+Org `kybrion` (profile pinned via `UNIKRAFT_PROFILE`), metro `fra`. CLI: `unikraft` 0.5.2.
 
 **Status (2026-10-02): code ready and verified locally; the cloud run hasn't been done yet.**
 Every cloud item below is **NOT RUN**. Fill each one in from the command next to it.
@@ -109,6 +109,6 @@ Result:
 
 ```bash
 ./scripts/cleanup.sh            # unikraft instances delete demo-fga-api demo-fga-openfga
-./scripts/cleanup.sh --images   # also delete gaaaa/demo-fga-api and gaaaa/demo-fga-openfga images
+./scripts/cleanup.sh --images   # also delete the <org>/demo-fga-* images
 unikraft instances list         # confirm no tunnel relay instance is left behind
 ```
