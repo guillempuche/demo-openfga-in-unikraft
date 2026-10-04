@@ -1,10 +1,6 @@
 # Environment files
 .env
 
-# Docker volumes
-authz/certificates/*.pem
-authz/certificates/*.key
-
 # Kraftcloud
 .unikraft
 # direnv

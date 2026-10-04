@@ -1,8 +1,9 @@
 # OpenFGA on KraftCloud: Debugging Journey
 
-> **Historical note (2026-10):** written for the legacy `kraft cloud` CLI and a self-hosted
-> PostgreSQL unikernel. The current setup uses the `unikraft` CLI and Neon; see the
-> [README](../README.md#unikraft-cloud-deployment) and [RESULTS](RESULTS.md).
+> **Historical note (2026-10):** written for the legacy `kraft cloud` CLI, before the
+> current setup. Paths and commands here are out of date. The current setup uses the
+> `unikraft` CLI with a private PostgreSQL instance on Unikraft; see the
+> [README](../README.md#deploy-to-unikraft-cloud) and [RESULTS](RESULTS.md).
 
 ## Problem Statement
 
