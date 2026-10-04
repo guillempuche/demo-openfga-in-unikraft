@@ -1,0 +1,1458 @@
+import nock from "nock";
+import { before, beforeEach, describe, it } from "node:test";
+
+import {
+  CheckResponse,
+  Configuration,
+  CredentialsMethod,
+  ErrorCode,
+  FgaApiAuthenticationError,
+  FgaApiError,
+  FgaApiInternalError,
+  FgaApiNotFoundError,
+  FgaApiRateLimitExceededError,
+  FgaApiValidationError,
+  FgaError,
+  OpenFgaApi,
+  TelemetryAttribute,
+} from "../index";
+import { CallResult } from "../common";
+import { GetDefaultRetryParams } from "../configuration";
+import { AuthCredentialsConfig } from "../credentials";
+import {
+  baseConfig,
+  defaultConfiguration,
+  OPENFGA_API_TOKEN_ISSUER,
+  OPENFGA_CLIENT_ASSERTION_SIGNING_KEY,
+} from "./helpers/default-config";
+import { getNocks } from "./helpers/nocks";
+import { expect } from "./helpers/expect";
+
+const nocks = getNocks(nock);
+
+describe("OpenFGA SDK", function () {
+  describe("initializing the sdk", () => {
+    it("should not require storeId in configuration", () => {
+      expect(
+        () => new OpenFgaApi({ ...baseConfig, storeId: undefined } as any)
+      ).not.toThrow();
+    });
+
+    it("should require host in configuration", () => {
+      expect(
+        () => new OpenFgaApi({ ...baseConfig, apiUrl: undefined! })
+      ).toThrow();
+    });
+
+    it("should validate host in configuration (adding scheme as part of the host)", () => {
+      expect(
+        () => new OpenFgaApi({ ...baseConfig, apiUrl: "//api.fga.example" })
+      ).toThrow();
+    });
+
+    it("should allow using apiHost if apiUrl is not provided", () => {
+      expect(
+        () => new OpenFgaApi({ ...baseConfig, apiHost: "api.fga.example" })
+      ).not.toThrow();
+    });
+
+    it("should still validate apiHost", () => {
+      expect(
+        () => new OpenFgaApi({ ...baseConfig, apiHost: "//api.fga.example" })
+      ).not.toThrow();
+    });
+
+    for (const scheme of ["https://", "http://", ""]) {
+      it(`should allow valid schemes or default when scheme is missing (${scheme})`, () => {
+        expect(
+          () => new OpenFgaApi({
+            ...baseConfig,
+            credentials: {
+              method: CredentialsMethod.ClientCredentials,
+              config: {
+                ...(baseConfig.credentials as any).config,
+                apiTokenIssuer: `${scheme}tokenissuer.fga.example`
+              }
+            } as Configuration["credentials"]
+          })
+        ).not.toThrow();
+      });
+    }
+
+    for (const scheme of ["tcp://", "grpc://", "file://"]) {
+      it(`should not allow invalid schemes as part of the apiTokenIssuer in configuration (${scheme})`, () => {
+        expect(
+          () => new OpenFgaApi({
+            ...baseConfig,
+            credentials: {
+              method: CredentialsMethod.ClientCredentials,
+              config: {
+                ...(baseConfig.credentials as any).config,
+                apiTokenIssuer: `${scheme}tokenissuer.fga.example`
+              }
+            } as Configuration["credentials"]
+          })
+        ).toThrow();
+      });
+    }
+
+    it("should not require credentials in configuration when not needed", () => {
+      expect(
+        () =>
+          new OpenFgaApi({
+            apiUrl: baseConfig.apiUrl,
+          })
+      ).not.toThrow();
+    });
+
+    it("should require apiToken credentials in configuration in api_token flow", () => {
+      expect(
+        () =>
+          new OpenFgaApi({
+            apiUrl: baseConfig.apiUrl,
+            credentials: {
+              method: CredentialsMethod.ApiToken as any
+            }
+          })
+      ).toThrow();
+    });
+
+    it("should require clientId, clientSecret, apiTokenIssuer and apiAudience credentials in configuration in client_credentials flow", () => {
+      expect(
+        () =>
+          new OpenFgaApi({
+            ...baseConfig,
+            credentials: {
+              method: CredentialsMethod.ClientCredentials,
+            } as AuthCredentialsConfig,
+          })
+      ).toThrow("config.clientId");
+
+      expect(
+        () =>
+          new OpenFgaApi({
+            ...baseConfig,
+            credentials: {
+              method: CredentialsMethod.ClientCredentials,
+              config: {
+                ...(baseConfig.credentials as any)!.config,
+                clientId: undefined!
+              }
+            } as Configuration["credentials"]
+          })
+      ).toThrow("config.clientId");
+
+      expect(
+        () =>
+          new OpenFgaApi({
+            ...baseConfig,
+            credentials: {
+              method: CredentialsMethod.ClientCredentials,
+              config: {
+                ...(baseConfig.credentials as any)!.config,
+                clientSecret: undefined!
+              }
+            } as Configuration["credentials"]
+          })
+      ).toThrow("config.clientSecret or config.clientAssertionSigningKey");
+
+      expect(
+        () =>
+          new OpenFgaApi({
+            ...baseConfig,
+            credentials: {
+              method: CredentialsMethod.ClientCredentials,
+              config: {
+                ...(baseConfig.credentials as any)!.config,
+                clientSecret: undefined!,
+                clientAssertionSigningKey: undefined!
+              }
+            } as Configuration["credentials"]
+          })
+      ).toThrow("config.clientSecret or config.clientAssertionSigningKey");
+
+
+      expect(
+        () =>
+          new OpenFgaApi({
+            ...baseConfig,
+            credentials: {
+              method: CredentialsMethod.ClientCredentials,
+              config: {
+                ...(baseConfig.credentials as any)!.config,
+                apiAudience: undefined!
+              }
+            } as Configuration["credentials"]
+          })
+      ).toThrow("config.apiAudience");
+
+      expect(
+        () =>
+          new OpenFgaApi({
+            ...baseConfig,
+            credentials: {
+              method: CredentialsMethod.ClientCredentials,
+              config: {
+                ...(baseConfig.credentials as any)!.config,
+                apiTokenIssuer: undefined!
+              }
+            } as Configuration["credentials"]
+          })
+      ).toThrow("config.apiTokenIssuer");
+    });
+
+    it("should issue a network call to get the token at the first request if client id is provided", async () => {
+      nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER);
+      nocks.readAuthorizationModels(baseConfig.storeId!);
+      const fgaApi = new OpenFgaApi(baseConfig);
+      await fgaApi.readAuthorizationModels(baseConfig.storeId!);
+    });
+
+    it("should cache the bearer token and not issue a network call to get the token at the second request", async () => {
+      // Use a long-lived token so this test validates caching behavior
+      // independently from proactive near-expiry refresh logic.
+      let scope = nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token", 3600);
+      nocks.readAuthorizationModels(baseConfig.storeId!);
+
+      const fgaApi = new OpenFgaApi(baseConfig);
+      expect(scope.isDone()).toBe(false);
+
+      await fgaApi.readAuthorizationModels(baseConfig.storeId!);
+
+      expect(scope.isDone()).toBe(true);
+
+      scope = nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER);
+      nocks.readAuthorizationModels(baseConfig.storeId!);
+      expect(scope.isDone()).toBe(false);
+
+      await fgaApi.readAuthorizationModels(baseConfig.storeId!);
+
+      expect(scope.isDone()).toBe(false);
+      
+      // NOTE: manually clean pending mocks as we assert on _not_ being matched above.
+      nock.cleanAll();
+    });
+
+    it("should retry a failed attempt to request to exchange the credentials", async () => {
+      nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token", 300, 500, {
+        "Retry-After": "1" // Add Retry-After header
+      });
+      nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER);
+      nocks.readAuthorizationModels(baseConfig.storeId!);
+      const fgaApi = new OpenFgaApi(baseConfig);
+      await fgaApi.readAuthorizationModels(baseConfig.storeId!);
+    });
+
+    it("should not issue a network call to get the token at the first request if the clientId is not provided", async () => {
+      const scope = nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER);
+      nocks.readAuthorizationModels(baseConfig.storeId!);
+
+      const fgaApi = new OpenFgaApi({
+        apiUrl: baseConfig.apiUrl,
+      });
+      expect(scope.isDone()).toBe(false);
+
+      await fgaApi.readAuthorizationModels(baseConfig.storeId!);
+
+      expect(scope.isDone()).toBe(false);
+
+      // NOTE: manually clean pending mocks as we assert on _not_ being matched above.
+      nock.cleanAll();
+    });
+
+    it("should issue a network call to get the token at the first request if client assertion is provided", async () => {
+      nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER);
+      nocks.readAuthorizationModels(baseConfig.storeId!);
+      const fgaApi = new OpenFgaApi({
+        ...baseConfig,
+        credentials: {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            ...(baseConfig.credentials as any).config,
+            clientAssertionSigningKey: OPENFGA_CLIENT_ASSERTION_SIGNING_KEY
+          }
+        }
+      });
+      await fgaApi.readAuthorizationModels(baseConfig.storeId!);
+    });
+
+    it("should allow passing in a configuration instance", async () => {
+      const configuration = new Configuration(baseConfig);
+      expect(() => new OpenFgaApi(configuration)).not.toThrow();
+    });
+
+    it("should only accept valid telemetry attributes", async () => {
+      expect(
+        () =>
+          new OpenFgaApi({
+            ...baseConfig,
+            telemetry: {
+              metrics: {
+                counterCredentialsRequest: {
+                  attributes: ["JUNK"] as any
+                },
+                histogramQueryDuration: {
+                  attributes: new Set<TelemetryAttribute>
+                },
+                histogramRequestDuration: {
+                  attributes: new Set<TelemetryAttribute>
+                }
+              }
+            }
+          })
+      ).toThrow();
+    });
+  });
+
+  describe("error handling", () => {
+    let fgaApi: OpenFgaApi;
+    const { storeId } = baseConfig;
+    const basePath = defaultConfiguration.getBasePath();
+    const requestId = "1F2A3B";
+
+    before(() => {
+      fgaApi = new OpenFgaApi({ ...baseConfig });
+    });
+
+    describe("400 level error should result in FgaApiValidationError", () => {
+      const tupleKey = {
+        user: "user:xyz",
+        relation: "viewer",
+        object: "foobar:x",
+      };
+
+      beforeEach(async () => {
+        nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+
+        nock(basePath)
+          .defaultReplyHeaders({
+            "Fga-Request-Id": requestId,
+            "Content-Type": "application/json",
+          })
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(400, {
+            code: "validation_error",
+            message: "nock error",
+          });
+      });
+
+      it("should throw FgaApiValidationError", async () => {
+        await expect(
+          fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey })
+        ).rejects.toThrow(FgaApiValidationError);
+      });
+
+      it("FgaApiValidationError should have correct fields", async () => {
+        try {
+          await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+        } catch (err) {
+          expect(err).toBeInstanceOf(FgaApiValidationError);
+          if (err instanceof FgaApiValidationError) {
+            expect(err.apiErrorCode).toBe(ErrorCode.ValidationError);
+            expect(err.storeId).toBe(storeId);
+            expect(err.endpointCategory).toBe("check");
+            expect(err.requestId).toBe(requestId);
+          }
+        }
+      });
+    });
+
+    describe("429 level error should result in FgaApiRateLimitExceededError", () => {
+      const tupleKey = {
+        user: "user:xyz",
+        relation: "viewer",
+        object: "foobar:x",
+      };
+
+      beforeEach(async () => {
+        const updateBaseConfig = {
+          ...baseConfig,
+          retryParams: GetDefaultRetryParams(2, 10),
+        };
+        fgaApi = new OpenFgaApi({ ...updateBaseConfig });
+        nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .times(3)
+          .reply(429, {
+            code: "rate_limit_exceeded",
+            message: "nock error",
+          });
+      });
+
+      it("should throw FgaApiRateLimitExceededError", async () => {
+        await expect(
+          fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey }, {})
+        ).rejects.toThrow(FgaApiRateLimitExceededError);
+      });
+    });
+
+    describe("429 with default retry config is successful", () => {
+      const tupleKey = {
+        user: "user:xyz",
+        relation: "viewer",
+        object: "foobar:x",
+      };
+
+      beforeEach(async () => {
+        fgaApi = new OpenFgaApi({ ...baseConfig });
+
+        nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+              authorization_model_id: "01GXSA8YR785C4FYS3C0RTG7B1"
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .times(1)
+          .reply(429, {
+            code: "rate_limit_exceeded",
+            message: "nock error",
+          });
+
+        nocks.check(baseConfig.storeId!, tupleKey);
+      });
+
+      it("should return allowed", async () => {
+        const result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey, authorization_model_id: "01GXSA8YR785C4FYS3C0RTG7B1"}, {});
+
+        expect(result.allowed).toBe(true);
+      });
+    });
+
+    describe("429 with retry in config and retry is successful", () => {
+      const tupleKey = {
+        user: "user:xyz",
+        relation: "viewer",
+        object: "foobar:x",
+      };
+
+      beforeEach(async () => {
+        const updateBaseConfig = {
+          ...baseConfig,
+          retryParams: GetDefaultRetryParams(2, 10),
+        };
+        fgaApi = new OpenFgaApi({ ...updateBaseConfig });
+
+        nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+              authorization_model_id: "01GXSA8YR785C4FYS3C0RTG7B1"
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .times(1)
+          .reply(429, {
+            code: "rate_limit_exceeded",
+            message: "nock error",
+          });
+
+        nocks.check(baseConfig.storeId!, tupleKey);
+      });
+
+      it("should return allowed", async () => {
+        const result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey, authorization_model_id: "01GXSA8YR785C4FYS3C0RTG7B1"}, {});
+
+        expect(result.allowed).toBe(true);
+      });
+    });
+
+    describe("429 with retry in call and retry is successful", () => {
+      const tupleKey = {
+        user: "user:xyz",
+        relation: "viewer",
+        object: "foobar:x",
+      };
+
+      beforeEach(async () => {
+        nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .times(1)
+          .reply(429, {
+            code: "rate_limit_exceeded",
+            message: "nock error",
+          });
+
+        nocks.check(baseConfig.storeId!, tupleKey);
+      });
+
+      it("should return allowed", async () => {
+        const result = await fgaApi.check(
+          baseConfig.storeId!,
+          { tuple_key: tupleKey },
+          { retryParams: GetDefaultRetryParams(2, 10) }
+        );
+
+        expect(result.allowed).toBe(true);
+      });
+    });
+
+    describe("500 level error should result in FgaApiInternalError", () => {
+      const tupleKey = {
+        user: "user:xyz",
+        relation: "viewer",
+        object: "foobar:x",
+      };
+
+      beforeEach(async () => {
+        nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+      });
+
+      it("should throw FgaApiInternalError if retries disabled", async () => {
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(500, {
+            code: "internal_error",
+            message: "nock error",
+          });
+
+        await expect(
+          fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey }, { retryParams: { maxRetry: 0 }})
+        ).rejects.toThrow(FgaApiInternalError);
+      });
+      it("should retry 500 error without Retry-After header using exponential backoff", async () => {
+        const updateBaseConfig = {
+          ...baseConfig,
+          retryParams: GetDefaultRetryParams(2, 10),
+        };
+        const fgaApiWithRetry = new OpenFgaApi({ ...updateBaseConfig });
+
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(500, {
+            code: "internal_error",
+            message: "nock error",
+          });
+
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(200, {
+            allowed: true,
+          });
+
+        const response = await fgaApiWithRetry.check(baseConfig.storeId!, { tuple_key: tupleKey });
+        expect(response.allowed).toBe(true);
+      });
+      it("should not throw FgaApiInternalError with default retries", async () => {
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(500, {
+            code: "internal_error",
+            message: "nock error",
+          }, {
+            "Retry-After": "1"
+          });
+
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(200, {
+            allowed: true,
+          });
+
+        const response = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+        expect(response.allowed).toBe(true);
+      });
+    });
+
+    describe("404 level error should result in FgaApiNotFoundError", () => {
+      const tupleKey = {
+        user: "user:xyz",
+        relation: "viewer",
+        object: "foobar:x",
+      };
+
+      beforeEach(async () => {
+        nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(404, {
+            code: "undefined_endpoint",
+            message: "nock error",
+          });
+      });
+
+      it("should throw FgaApiNotFoundError", async () => {
+        await expect(
+          fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey })
+        ).rejects.toThrow(FgaApiNotFoundError);
+      });
+    });
+
+    describe("401 during authentication should result in FgaApiAuthenticationError", () => {
+      const tupleKey = {
+        user: "user:xyz",
+        relation: "viewer",
+        object: "foobar:x",
+      };
+
+      beforeEach(async () => {
+        nock(`https://${ OPENFGA_API_TOKEN_ISSUER}`)
+          .post("/oauth/token")
+          .reply(401);
+      });
+
+      it("should throw FgaApiAuthenticationError", async () => {
+        fgaApi = new OpenFgaApi({ ...baseConfig });
+        await expect(
+          fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey })
+        ).rejects.toThrow(FgaApiAuthenticationError);
+      });
+    });
+
+    describe("non-Axios errors should be thrown immediately without retry", () => {
+      it("should throw FgaError immediately for non-Axios errors", async () => {
+        const tupleKey = {
+          user: "user:xyz",
+          relation: "viewer",
+          object: "foobar:x",
+        };
+
+        fgaApi = new OpenFgaApi({
+          ...baseConfig,
+          retryParams: GetDefaultRetryParams(3, 10)
+        });
+
+        nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+
+        // Mock axios to throw a non-Axios error
+        const originalAxios = (fgaApi as any).axios;
+        let callCount = 0;
+        (fgaApi as any).axios = async () => {
+          callCount++;
+          const nonAxiosError = new Error("Non-Axios error");
+          throw nonAxiosError;
+        };
+
+        await expect(
+          fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey })
+        ).rejects.toThrow("Non-Axios error");
+
+        // Should not retry - only called once
+        expect(callCount).toBe(1);
+
+        // Restore original axios
+        (fgaApi as any).axios = originalAxios;
+      });
+    });
+
+    describe("retry logic with maxRetry=1 should allow exactly 1 retry", () => {
+      const tupleKey = {
+        user: "user:xyz",
+        relation: "viewer",
+        object: "foobar:x",
+      };
+
+      beforeEach(async () => {
+        const updateBaseConfig = {
+          ...baseConfig,
+          retryParams: GetDefaultRetryParams(1, 10),
+        };
+        fgaApi = new OpenFgaApi({ ...updateBaseConfig });
+        nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+      });
+
+      it("should retry once (2 total attempts) when maxRetry=1 for 500 error", async () => {
+        // First attempt fails with 500
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(500, {
+            code: "internal_error",
+            message: "nock error",
+          });
+
+        // Second attempt (first retry) succeeds
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(200, {
+            allowed: true,
+          });
+
+        const response = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+        expect(response.allowed).toBe(true);
+      });
+
+      it("should fail after 2 total attempts when maxRetry=1 and all fail", async () => {
+        // Both attempts fail
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .times(2)
+          .reply(500, {
+            code: "internal_error",
+            message: "nock error",
+          });
+
+        await expect(
+          fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey })
+        ).rejects.toThrow(FgaApiInternalError);
+      });
+
+      it("should retry once (2 total attempts) when maxRetry=1 for 429 error", async () => {
+        // First attempt fails with 429
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(429, {
+            code: "rate_limit_exceeded",
+            message: "nock error",
+          });
+
+        // Second attempt (first retry) succeeds
+        nock(basePath)
+          .post(
+            `/stores/${storeId}/check`,
+            {
+              tuple_key: tupleKey,
+            },
+            expect.objectContaining({ Authorization: "Bearer test-token" })
+          )
+          .reply(200, {
+            allowed: true,
+          });
+
+        const response = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+        expect(response.allowed).toBe(true);
+      });
+    });
+  });
+
+  describe("error handling for token exchange", () => {
+    let fgaApi: OpenFgaApi;
+    const tupleKey = {
+      user: "user:xyz",
+      relation: "viewer",
+      object: "foobar:x",
+    };
+
+    beforeEach(() => {
+      fgaApi = new OpenFgaApi({ ...baseConfig });
+    });
+
+    it("should handle non-401 errors during token exchange", async () => {
+      nock(`https://${OPENFGA_API_TOKEN_ISSUER}`)
+        .post("/oauth/token")
+        .reply(500, { error: "server_error" });
+
+      await expect(
+        fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey })
+      ).rejects.toThrow(FgaError);
+    });
+
+
+    it("should handle network errors during token exchange", async () => {
+      // Mock a network error during token exchange
+      nock(`https://${OPENFGA_API_TOKEN_ISSUER}`)
+        .post("/oauth/token")
+        .replyWithError("Network error");
+
+      await expect(
+        fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey })
+      ).rejects.toThrow();
+    });
+  });
+
+  describe("retry behavior with Retry-After header", () => {
+    let fgaApi: OpenFgaApi;
+    const tupleKey = {
+      user: "user:xyz",
+      relation: "viewer",
+      object: "foobar:x",
+    };
+    const basePath = defaultConfiguration.getBasePath();
+    const { storeId } = baseConfig;
+
+    beforeEach(() => {
+      const updateBaseConfig = {
+        ...baseConfig,
+        retryParams: GetDefaultRetryParams(2, 100), // Use 100ms for faster tests
+      };
+      fgaApi = new OpenFgaApi({ ...updateBaseConfig });
+      nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+    });
+
+    it("should use exponential backoff when Retry-After header is missing", async () => {
+      // First request fails with 429, no Retry-After header
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(429, {
+          code: "rate_limit_exceeded",
+          message: "rate limited",
+        });
+
+      // Second request succeeds
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(200, { allowed: true });
+
+      const result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+      expect(result.allowed).toBe(true);
+    });
+
+    it("should use valid Retry-After header (integer seconds)", async () => {
+      // First request fails with 429, valid Retry-After header (2 seconds)
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(429, {
+          code: "rate_limit_exceeded",
+          message: "rate limited",
+        }, {
+          "Retry-After": "2"
+        });
+
+      // Second request succeeds
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(200, { allowed: true });
+
+      const startTime = Date.now();
+      const result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+      const elapsedTime = Date.now() - startTime;
+
+      expect(result.allowed).toBe(true);
+    });
+
+    it("should use valid Retry-After header (HTTP date)", async () => {
+      const retryAfterDate = new Date(Date.now() + 2000); // 2 seconds from now
+
+      // First request fails with 429, valid Retry-After header (HTTP date)
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(429, {
+          code: "rate_limit_exceeded",
+          message: "rate limited",
+        }, {
+          "Retry-After": retryAfterDate.toUTCString()
+        });
+
+      // Second request succeeds
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(200, { allowed: true });
+
+      const startTime = Date.now();
+      const result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+      const elapsedTime = Date.now() - startTime;
+
+      expect(result.allowed).toBe(true);
+      expect(elapsedTime).toBeLessThan(2500);
+    });
+
+    it("should handle invalid Retry-After header format and fallback to exponential backoff", async () => {
+      // First request fails with 429, invalid Retry-After header
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(429, {
+          code: "rate_limit_exceeded",
+          message: "rate limited",
+        }, {
+          "Retry-After": "not-a-number"
+        });
+
+      // Second request succeeds
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(200, { allowed: true });
+
+      const result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+      expect(result.allowed).toBe(true);
+    });
+
+    it("should reject Retry-After header exceeding 30 minutes and fallback to exponential backoff", async () => {
+      // First request fails with 429, Retry-After exceeds max (30 minutes = 1800 seconds)
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(429, {
+          code: "rate_limit_exceeded",
+          message: "rate limited",
+        }, {
+          "Retry-After": "2000" // 2000 seconds > 1800 seconds (30 min)
+        });
+
+      // Second request succeeds
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(200, { allowed: true });
+
+      const startTime = Date.now();
+      const result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+      const elapsedTime = Date.now() - startTime;
+
+      expect(result.allowed).toBe(true);
+      // Should fallback to exponential backoff, not wait 2000 seconds
+      expect(elapsedTime).toBeLessThan(5000);
+    });
+
+    it("should reject Retry-After header less than 1 second and fallback to exponential backoff", async () => {
+      // First request fails with 429, Retry-After less than minimum (1 second)
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(429, {
+          code: "rate_limit_exceeded",
+          message: "rate limited",
+        }, {
+          "Retry-After": "0" // 0 seconds < 1 second minimum
+        });
+
+      // Second request succeeds
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(200, { allowed: true });
+
+      const startTime = Date.now();
+      const result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+      const elapsedTime = Date.now() - startTime;
+
+      expect(result.allowed).toBe(true);
+      // Should fallback to exponential backoff with configured minWaitInMs
+      expect(elapsedTime).toBeGreaterThan(0);
+      expect(elapsedTime).toBeLessThan(5000);
+    });
+
+    it("should use Retry-After header for 500 errors when present", async () => {
+      // First request fails with 500, valid Retry-After header
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(500, {
+          code: "internal_error",
+          message: "internal error",
+        }, {
+          "Retry-After": "2"
+        });
+
+      // Second request succeeds
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(200, { allowed: true });
+
+      const startTime = Date.now();
+      const result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+      const elapsedTime = Date.now() - startTime;
+
+      expect(result.allowed).toBe(true);
+      // Should wait approximately 2 seconds
+      expect(elapsedTime).toBeLessThan(2500);
+    });
+
+    it("should fallback to exponential backoff for 500 errors without Retry-After header", async () => {
+      // First request fails with 500, no Retry-After header
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(500, {
+          code: "internal_error",
+          message: "internal error",
+        });
+
+      // Second request succeeds
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(200, { allowed: true });
+
+      const result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+      expect(result.allowed).toBe(true);
+    });
+  });
+
+
+  describe("no retries for 501 Not Implemented errors", () => {
+    let fgaApi: OpenFgaApi;
+    const tupleKey = {
+      user: "user:xyz",
+      relation: "viewer",
+      object: "foobar:x",
+    };
+    const basePath = defaultConfiguration.getBasePath();
+    const { storeId } = baseConfig;
+
+    beforeEach(() => {
+      const updateBaseConfig = {
+        ...baseConfig,
+        retryParams: GetDefaultRetryParams(3, 10), // Allow multiple retries
+      };
+      fgaApi = new OpenFgaApi({ ...updateBaseConfig });
+      nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER, "test-token");
+    });
+
+    it("should not retry 501 Not Implemented errors", async () => {
+      // Mock a single 501 error - should not be retried
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(501, {
+          code: "not_implemented",
+          message: "not implemented error",
+        });
+
+      await expect(
+        fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey })
+      ).rejects.toThrow(FgaApiError);
+    });
+
+    it("should not retry 501 errors even with Retry-After header", async () => {
+      // Mock a single 501 error with Retry-After header - should still not be retried
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(501, {
+          code: "not_implemented",
+          message: "not implemented error",
+        }, {
+          "Retry-After": "2"
+        });
+
+      await expect(
+        fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey })
+      ).rejects.toThrow(FgaApiError);
+    });
+
+    it("should retry 500 but not 501 errors", async () => {
+      // First attempt - 500 error should be retried
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(500, {
+          code: "internal_error",
+          message: "internal error",
+        });
+
+      // Second attempt - 501 error should not be retried
+      nock(basePath)
+        .post(
+          `/stores/${storeId}/check`,
+          {
+            tuple_key: tupleKey,
+          },
+          expect.objectContaining({ Authorization: "Bearer test-token" })
+        )
+        .reply(501, {
+          code: "not_implemented",
+          message: "not implemented error",
+        });
+
+      await expect(
+        fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey })
+      ).rejects.toThrow(FgaApiError);
+    });
+  });
+
+  describe("happy path of CHECK", () => {
+    let result: CallResult<CheckResponse>;
+    let fgaApi: OpenFgaApi;
+
+    before(async () => {
+      fgaApi = new OpenFgaApi({ ...baseConfig });
+      nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER);
+
+      const tupleKey = {
+        user: "user:xyz",
+        relation: "abc",
+        object: "foobar:x",
+      };
+      nocks.check(baseConfig.storeId!, tupleKey);
+      result = await fgaApi.check(baseConfig.storeId!, { tuple_key: tupleKey });
+    });
+
+    it("should return allowed", () => {
+      expect(result.allowed).toBe(true);
+    });
+
+    it("should return the proper $response object", () => {
+      expect(result).toHaveProperty("$response");
+      expect(result.$response.status).toBe(200);
+      expect(
+        Object.prototype.propertyIsEnumerable.call(result, "$response")
+      ).toBe(false);
+    });
+  });
+
+  describe("using the sdk", () => {
+    let fgaApi: OpenFgaApi;
+
+    before(() => {
+      fgaApi = new OpenFgaApi({ ...baseConfig });
+    });
+
+    beforeEach(() => {
+      nocks.tokenExchange(OPENFGA_API_TOKEN_ISSUER);
+    });
+
+    describe("check", () => {
+      it("should properly pass the request and return an allowed API response", async () => {
+        const tuple = {
+          user: "user:81684243-9356-4421-8fbf-a4f8d36aa31b",
+          relation: "admin",
+          object: "workspace:1",
+        };
+        nocks.check(baseConfig.storeId!, tuple);
+        const data = await fgaApi.check(baseConfig.storeId!, { tuple_key: tuple });
+        expect(data).toMatchObject({ allowed: expect.any(Boolean) });
+      });
+    });
+
+    describe("write: write tuples", () => {
+      it("should properly call the OpenFga Write API", async () => {
+        const tuple = {
+          user: "user:81684243-9356-4421-8fbf-a4f8d36aa31b",
+          relation: "admin",
+          object: "workspace:1",
+        };
+        nocks.write(baseConfig.storeId!);
+
+        const data = await fgaApi.write(
+          baseConfig.storeId!,
+          {
+            writes: { tuple_keys: [tuple] },
+            authorization_model_id: "01GXSA8YR785C4FYS3C0RTG7B1",
+          });
+
+        expect(data).toMatchObject({});
+      });
+    });
+
+    describe("write: delete tuples", () => {
+      it("should properly call the OpenFga Write API", async () => {
+        const tuple = {
+          user: "user:81684243-9356-4421-8fbf-a4f8d36aa31b",
+          relation: "admin",
+          object: "workspace:1",
+        };
+        nocks.delete(baseConfig.storeId!, tuple);
+
+        const data = await fgaApi.write(
+          baseConfig.storeId!,
+          {
+            deletes: { tuple_keys: [tuple] },
+            authorization_model_id: "01GXSA8YR785C4FYS3C0RTG7B1",
+          });
+        expect(data).toMatchObject({});
+      });
+    });
+
+    describe("expand", () => {
+      it("should properly call the OpenFga Expand API", async () => {
+        const tuple = {
+          user: "user:81684243-9356-4421-8fbf-a4f8d36aa31b",
+          relation: "admin",
+          object: "workspace:1",
+        };
+        nocks.expand(baseConfig.storeId!, tuple);
+
+        const data = await fgaApi.expand(
+          baseConfig.storeId!,
+          { tuple_key: tuple, authorization_model_id: "01GXSA8YR785C4FYS3C0RTG7B1"});
+
+        expect(data).toMatchObject({});
+      });
+    });
+
+    describe("read", () => {
+      it("should properly call the OpenFga Read API", async () => {
+        const tuple = {
+          user: "user:81684243-9356-4421-8fbf-a4f8d36aa31b",
+          relation: "admin",
+          object: "workspace:1",
+        };
+        nocks.read(baseConfig.storeId!, tuple);
+
+        const data = await fgaApi.read(baseConfig.storeId!, { tuple_key: tuple });
+
+        expect(data).toMatchObject({});
+      });
+    });
+
+    describe("writeAuthorizationModel", () => {
+      it("should call the api and return the response", async () => {
+        const authorizationModel = {
+          schema_version: "1.1",
+          type_definitions: [
+            { type: "workspace", relations: { admin: { this: {} } } },
+          ],
+        };
+        nocks.writeAuthorizationModel(
+          baseConfig.storeId!,
+          authorizationModel
+        );
+
+        const data = await fgaApi.writeAuthorizationModel(
+          baseConfig.storeId!,
+          authorizationModel
+        );
+
+        expect(data).toMatchObject({ id: expect.any(String) });
+      });
+    });
+
+    describe("readAuthorizationModel", () => {
+      it("should call the api and return the response", async () => {
+        const configId = "string";
+        nocks.readSingleAuthzModel(baseConfig.storeId!, configId);
+
+        const data = await fgaApi.readAuthorizationModel(baseConfig.storeId!, configId);
+
+        expect(data).toMatchObject({
+          authorization_model: {
+            id: expect.any(String),
+            schema_version: "1.1",
+            type_definitions: expect.arrayContaining([]),
+          },
+        });
+      });
+    });
+
+    describe("readAuthorizationModels", () => {
+      it("should call the api and return the response", async () => {
+        nocks.readAuthorizationModels(baseConfig.storeId!, defaultConfiguration.getBasePath(), [{ id: "1", schema_version: "1.1", type_definitions: []}]);
+
+        const data = await fgaApi.readAuthorizationModels(baseConfig.storeId!);
+
+        expect(data).toMatchObject({
+          authorization_models: expect.arrayContaining([{ id: "1", schema_version: "1.1", type_definitions: []}]),
+        });
+      });
+    });
+
+    describe("readChanges", () => {
+      it("should call the api and return the response", async () => {
+        const type = "repo";
+        const pageSize = 25;
+        const continuationToken = "eyJwayI6IkxBVEVTVF9OU0NPTkZJR19hdXRoMHN0b3JlIiwic2siOiIxem1qbXF3MWZLZExTcUoyN01MdTdqTjh0cWgifQ==";
+        const startTime = "2022-01-01T00:00:00Z";
+
+        nocks.readChanges(baseConfig.storeId!, type, pageSize, continuationToken, startTime);
+
+        const response = await fgaApi.readChanges(baseConfig.storeId!, type, pageSize, continuationToken, startTime);
+
+        expect(response).toMatchObject({ changes: expect.arrayContaining([]) });
+      });
+    });
+
+    describe("listObjects", () => {
+      it("should call the api and return the response", async () => {
+        const mockedResponse = { objects: ["document:0192ab2a-d83f-756d-9397-c5ed9f3cb69a"] };
+        nocks.listObjects(baseConfig.storeId!, mockedResponse);
+
+        const response = await fgaApi.listObjects(
+          baseConfig.storeId!,
+          {
+            authorization_model_id: "01GAHCE4YVKPQEKZQHT2R89MQV",
+            user: "user:81684243-9356-4421-8fbf-a4f8d36aa31b",
+            relation: "can_read",
+            type: "document",
+            contextual_tuples: {
+              tuple_keys:
+                [{
+                  user: "user:81684243-9356-4421-8fbf-a4f8d36aa31b",
+                  relation: "editor",
+                  object: "folder:product"
+                }, {
+                  user: "folder:product",
+                  relation: "parent",
+                  object: "document:0192ab2a-d83f-756d-9397-c5ed9f3cb69a"
+                }]
+            }
+          });
+
+        expect(response.objects).toHaveLength(mockedResponse.objects.length);
+        expect(response.objects).toEqual(expect.arrayContaining(mockedResponse.objects));
+      });
+    });
+  });
+});

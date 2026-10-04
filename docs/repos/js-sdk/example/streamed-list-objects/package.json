@@ -1,0 +1,18 @@
+{
+  "name": "streamed-list-objects",
+  "private": "true",
+  "version": "1.0.0",
+  "description": "Example demonstrating streamedListObjects",
+  "author": "OpenFGA",
+  "license": "Apache-2.0",
+  "scripts": {
+    "start": "node streamedListObjects.mjs"
+  },
+  "dependencies": {
+    "@openfga/sdk": "file:../..",
+    "@openfga/syntax-transformer": "^0.2.1"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}

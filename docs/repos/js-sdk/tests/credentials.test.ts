@@ -1,0 +1,734 @@
+import nock from "nock";
+import * as jose from "jose";
+import { describe, mock, test } from "node:test";
+import { Credentials, CredentialsMethod, DEFAULT_TOKEN_ENDPOINT_PATH } from "../credentials";
+import { AuthCredentialsConfig } from "../credentials/types";
+import { TelemetryConfiguration } from "../telemetry/configuration";
+import SdkConstants from "../constants";
+import {
+  OPENFGA_API_AUDIENCE,
+  OPENFGA_CLIENT_ASSERTION_SIGNING_KEY,
+  OPENFGA_CLIENT_ID,
+  OPENFGA_CLIENT_SECRET,
+} from "./helpers/default-config";
+import { FgaApiAuthenticationError, FgaValidationError } from "../errors";
+import { expect } from "./helpers/expect";
+
+describe("Credentials", () => {
+  const mockTelemetryConfig: TelemetryConfiguration = new TelemetryConfiguration({});
+
+  describe("Refreshing access token", () => {
+    test("should use default scheme and token endpoint path when apiTokenIssuer has no scheme and no path", async () => {
+      const apiTokenIssuer = "issuer.fga.example";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = `/${DEFAULT_TOKEN_ENDPOINT_PATH}`;
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should use default token endpoint path when apiTokenIssuer has root path and no scheme", async () => {
+      const apiTokenIssuer = "https://issuer.fga.example/";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = `/${DEFAULT_TOKEN_ENDPOINT_PATH}`;
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should preserve custom token endpoint path when provided", async () => {
+      const apiTokenIssuer = "https://issuer.fga.example/some_endpoint";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = "/some_endpoint";
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should preserve custom token endpoint path with nested path when provided", async () => {
+      const apiTokenIssuer = "https://issuer.fga.example/api/v1/oauth/token";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = "/api/v1/oauth/token";
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should add https:// prefix when apiTokenIssuer has no scheme", async () => {
+      const apiTokenIssuer = "issuer.fga.example/some_endpoint";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = "/some_endpoint";
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should preserve http:// scheme when provided", async () => {
+      const apiTokenIssuer = "http://issuer.fga.example/some_endpoint";
+      const expectedBaseUrl = "http://issuer.fga.example";
+      const expectedPath = "/some_endpoint";
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should use default path when apiTokenIssuer has https:// scheme but no path", async () => {
+      const apiTokenIssuer = "https://issuer.fga.example";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = `/${DEFAULT_TOKEN_ENDPOINT_PATH}`;
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should preserve custom path with query parameters", async () => {
+      const apiTokenIssuer = "https://issuer.fga.example/some_endpoint?param=value";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = "/some_endpoint";
+      const queryParams = { param: "value" };
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .query(queryParams)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should preserve custom path with port number", async () => {
+      const apiTokenIssuer = "https://issuer.fga.example:8080/some_endpoint";
+      const expectedBaseUrl = "https://issuer.fga.example:8080";
+      const expectedPath = "/some_endpoint";
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should use default path when path has multiple trailing slashes", async () => {
+      const apiTokenIssuer = "https://issuer.fga.example///";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = `/${DEFAULT_TOKEN_ENDPOINT_PATH}`;
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should use default path when path only consists of slashes", async () => {
+      const apiTokenIssuer = "https://issuer.fga.example//";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = `/${DEFAULT_TOKEN_ENDPOINT_PATH}`;
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should preserve custom path with consecutive/trailing slashes", async () => {
+      const apiTokenIssuer = "https://issuer.fga.example/oauth//token///";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = "/oauth//token///";
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    for (const { description, apiTokenIssuer } of [
+      {
+        description: "malformed url",
+        apiTokenIssuer: "not a valid url::::",
+      },
+      {
+        description: "empty string",
+        apiTokenIssuer: "",
+      },
+      {
+        description: "whitespace-only issuer",
+        apiTokenIssuer: "   ",
+      },
+    ]) {
+      test(`should throw FgaValidationError when ${description}`, () => {
+        expect(() => new Credentials(
+          {
+            method: CredentialsMethod.ClientCredentials,
+            config: {
+              apiTokenIssuer,
+              apiAudience: OPENFGA_API_AUDIENCE,
+              clientId: OPENFGA_CLIENT_ID,
+              clientSecret: OPENFGA_CLIENT_SECRET,
+            },
+          } as AuthCredentialsConfig,
+          undefined,
+          mockTelemetryConfig,
+        )).toThrow(FgaValidationError);
+      });
+    }
+
+    test("should normalize audience from apiTokenIssuer when using PrivateKeyJWT client credentials with HTTPS scheme", async () => {
+      const apiTokenIssuer = "https://issuer.fga.example/some_endpoint";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedAudience = "https://issuer.fga.example/some_endpoint/";
+
+      nock(expectedBaseUrl)
+        .post("/some_endpoint", (body: string) => {
+          const params = new URLSearchParams(body);
+          const clientAssertion = params.get("client_assertion") as string;
+          const decoded = jose.decodeJwt(clientAssertion);
+          expect(decoded.aud).toBe(`${expectedAudience}`);
+          return true;
+        })
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientAssertionSigningKey: OPENFGA_CLIENT_ASSERTION_SIGNING_KEY,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should normalize audience from apiTokenIssuer when using PrivateKeyJWT client credentials with HTTP scheme", async () => {
+      const apiTokenIssuer = "http://issuer.fga.example/some_endpoint";
+      const expectedBaseUrl = "http://issuer.fga.example";
+      const expectedAudience = "http://issuer.fga.example/some_endpoint/";
+
+      nock(expectedBaseUrl)
+        .post("/some_endpoint", (body: string) => {
+          const params = new URLSearchParams(body);
+          const clientAssertion = params.get("client_assertion") as string;
+          const decoded = jose.decodeJwt(clientAssertion);
+          expect(decoded.aud).toBe(`${expectedAudience}`);
+          return true;
+        })
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientAssertionSigningKey: OPENFGA_CLIENT_ASSERTION_SIGNING_KEY,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should normalize audience from apiTokenIssuer when using PrivateKeyJWT client credentials with no scheme", async () => {
+      const apiTokenIssuer = "issuer.fga.example/some_endpoint";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedAudience = "https://issuer.fga.example/some_endpoint/";
+
+      nock(expectedBaseUrl)
+        .post("/some_endpoint", (body: string) => {
+          const params = new URLSearchParams(body);
+          const clientAssertion = params.get("client_assertion") as string;
+          const decoded = jose.decodeJwt(clientAssertion);
+          expect(decoded.aud).toBe(`${expectedAudience}`);
+          return true;
+        })
+        .reply(200, {
+          access_token: "test-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientAssertionSigningKey: OPENFGA_CLIENT_ASSERTION_SIGNING_KEY,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      await credentials.getAccessTokenHeader();
+    });
+
+    test("should throw a real FgaApiAuthenticationError instance when token refresh fails", async () => {
+      const apiTokenIssuer = "issuer.fga.example";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = `/${DEFAULT_TOKEN_ENDPOINT_PATH}`;
+      // We do this to skip the wait time between retries
+      const setTimeoutSpy = mock.method(global, "setTimeout", ((callback: () => void) => {
+        callback();
+        return {} as NodeJS.Timeout;
+      }) as typeof setTimeout);
+
+      const scope = nock(expectedBaseUrl)
+        .post(expectedPath)
+        .times(4)
+        .reply(500, {
+          code: "internal_error",
+          message: "token exchange failed",
+        });
+
+      try {
+        const credentials = new Credentials(
+          {
+            method: CredentialsMethod.ClientCredentials,
+            config: {
+              apiTokenIssuer,
+              apiAudience: OPENFGA_API_AUDIENCE,
+              clientId: OPENFGA_CLIENT_ID,
+              clientSecret: OPENFGA_CLIENT_SECRET,
+            },
+          } as AuthCredentialsConfig,
+          undefined,
+          mockTelemetryConfig,
+        );
+
+        let error: unknown;
+        try {
+          await credentials.getAccessTokenHeader();
+        } catch (err) {
+          error = err;
+        }
+
+        expect(error).toBeInstanceOf(FgaApiAuthenticationError);
+        const authenticationError = error as FgaApiAuthenticationError;
+        expect(authenticationError.statusCode).toBe(500);
+        expect(authenticationError.clientId).toBe(OPENFGA_CLIENT_ID);
+        expect(authenticationError.audience).toBe(OPENFGA_API_AUDIENCE);
+        expect(authenticationError.grantType).toBe(CredentialsMethod.ClientCredentials);
+        expect(scope.isDone()).toBe(true);
+      } finally {
+        setTimeoutSpy.mock.restore();
+      }
+    });
+
+    test("should preserve auth context when token endpoint returns 401", async () => {
+      const apiTokenIssuer = "issuer.fga.example";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = `/${DEFAULT_TOKEN_ENDPOINT_PATH}`;
+
+      const scope = nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(401, {
+          code: "unauthorized",
+          message: "invalid client credentials",
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      let error: unknown;
+      try {
+        await credentials.getAccessTokenHeader();
+      } catch (err) {
+        error = err;
+      }
+
+      expect(error).toBeInstanceOf(FgaApiAuthenticationError);
+      const authenticationError = error as FgaApiAuthenticationError;
+      expect(authenticationError.statusCode).toBe(401);
+      expect(authenticationError.clientId).toBe(OPENFGA_CLIENT_ID);
+      expect(authenticationError.audience).toBe(OPENFGA_API_AUDIENCE);
+      expect(authenticationError.grantType).toBe(CredentialsMethod.ClientCredentials);
+      expect(scope.isDone()).toBe(true);
+    });
+
+    test("should send a single token request for concurrent access token reads", async () => {
+      const apiTokenIssuer = "issuer.fga.example";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = `/${DEFAULT_TOKEN_ENDPOINT_PATH}`;
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .once()
+        .delay(20)
+        .reply(200, {
+          access_token: "shared-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      const headers = await Promise.all(
+        Array.from({ length: 5 }, () => credentials.getAccessTokenHeader())
+      );
+
+      headers.forEach(header => {
+        expect(header?.value).toBe("Bearer shared-token");
+      });
+    });
+
+    test("should clear shared refresh promise after failure and retry on the next call", async () => {
+      const apiTokenIssuer = "issuer.fga.example";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = `/${DEFAULT_TOKEN_ENDPOINT_PATH}`;
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .once()
+        .reply(404, {
+          code: "not_found",
+          message: "token exchange failed",
+        })
+        .post(expectedPath)
+        .once()
+        .reply(200, {
+          access_token: "recovered-token",
+          expires_in: 300,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      const results = await Promise.allSettled(
+        Array.from({ length: 5 }, () => credentials.getAccessTokenHeader())
+      );
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+
+      expect(rejected).toHaveLength(5);
+      expect(rejected[0].reason).toBe(rejected[1].reason);
+      expect(rejected[1].reason).toBe(rejected[2].reason);
+      expect(rejected[2].reason).toBe(rejected[3].reason);
+      expect(rejected[3].reason).toBe(rejected[4].reason);
+
+      const header = await credentials.getAccessTokenHeader();
+
+      expect(header?.value).toBe("Bearer recovered-token");
+    });
+
+    test("should refresh cached token when it is close to expiration", async () => {
+      const apiTokenIssuer = "issuer.fga.example";
+      const expectedBaseUrl = "https://issuer.fga.example";
+      const expectedPath = `/${DEFAULT_TOKEN_ENDPOINT_PATH}`;
+      const randomSpy = mock.method(Math, "random", () => 0);
+      const shortLivedTokenInSec = Math.max(
+        1,
+        SdkConstants.TokenExpiryThresholdBufferInSec - 1
+      );
+
+      nock(expectedBaseUrl)
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "short-lived-token",
+          expires_in: shortLivedTokenInSec,
+        })
+        .post(expectedPath)
+        .reply(200, {
+          access_token: "refreshed-token",
+          expires_in: 3600,
+        });
+
+      const credentials = new Credentials(
+        {
+          method: CredentialsMethod.ClientCredentials,
+          config: {
+            apiTokenIssuer,
+            apiAudience: OPENFGA_API_AUDIENCE,
+            clientId: OPENFGA_CLIENT_ID,
+            clientSecret: OPENFGA_CLIENT_SECRET,
+          },
+        } as AuthCredentialsConfig,
+        undefined,
+        mockTelemetryConfig,
+      );
+
+      try {
+        const header1 = await credentials.getAccessTokenHeader();
+        const header2 = await credentials.getAccessTokenHeader();
+
+        expect(header1?.value).toBe("Bearer short-lived-token");
+        expect(header2?.value).toBe("Bearer refreshed-token");
+      } finally {
+        randomSpy.mock.restore();
+      }
+    });
+  });
+});
