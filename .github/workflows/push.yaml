@@ -1,0 +1,33 @@
+name: push
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - openfga/**/*.proto
+      - buf.md
+      - buf.lock
+      - README.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
+      - uses: bufbuild/buf-push-action@a654ff18effe4641ebea4a4ce242c49800728459 # v1.2.0
+        with:
+          buf_token: ${{ secrets.BUF_TOKEN }}
+      - name: Send PagerDuty alert on failure
+        if: ${{ failure() }}
+        uses: miparnisari/action-pagerduty-alert@a6a738b712efa0e1a45b1b796c62f60fc30b5d99 # v0.3.2
+        with:
+          pagerduty-integration-key: ${{ secrets.PAGERDUTY_INTEGRATION_KEY }}
+          incident-summary: "Problem pushing OpenFGA Buf module to Buf Registry"

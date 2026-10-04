@@ -1,0 +1,6 @@
+/docs/openapiv2/apidocs.swagger.json linguist-generated=true
+/docs/openapiv3/apidocs.openapi.json linguist-generated=true
+*.pb.go linguist-generated=true
+*.pb.*.go linguist-generated=true
+go.sum linguist-generated=true
+buf.lock linguist-generated=true
