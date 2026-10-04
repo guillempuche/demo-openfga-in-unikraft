@@ -1,0 +1,180 @@
+/*
+Copyright © 2023 OpenFGA
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package query
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	openfga "github.com/openfga/go-sdk"
+	"github.com/openfga/go-sdk/client"
+	"github.com/spf13/cobra"
+
+	"github.com/openfga/cli/internal/cmdutils"
+	"github.com/openfga/cli/internal/fga"
+	"github.com/openfga/cli/internal/output"
+)
+
+func getRelationsForType(
+	ctx context.Context,
+	clientConfig fga.ClientConfig,
+	fgaClient client.SdkClient,
+	object string,
+) (*[]string, error) {
+	var authorizationModel openfga.AuthorizationModel
+
+	if clientConfig.AuthorizationModelID != "" {
+		response, err := fgaClient.ReadAuthorizationModel(ctx).Execute()
+		if err != nil {
+			return nil, fmt.Errorf("failed to list relations due to %w", err)
+		}
+
+		authorizationModel = response.GetAuthorizationModel()
+	} else {
+		response, err := fgaClient.ReadLatestAuthorizationModel(ctx).Execute()
+		if err != nil {
+			return nil, fmt.Errorf("failed to list relations due to %w", err)
+		}
+
+		authorizationModel = response.GetAuthorizationModel()
+	}
+
+	typeDefs := authorizationModel.TypeDefinitions
+	objectType, _, _ := strings.Cut(object, ":")
+	relations := []string{}
+
+	for index := range typeDefs {
+		if typeDefs[index].Type == objectType {
+			typeDef := typeDefs[index]
+			for relation := range *typeDef.Relations {
+				relations = append(relations, relation)
+			}
+
+			break
+		}
+	}
+
+	return &relations, nil
+}
+
+func listRelations(ctx context.Context,
+	clientConfig fga.ClientConfig,
+	fgaClient client.SdkClient,
+	user string,
+	object string,
+	relations []string,
+	contextualTuples []client.ClientContextualTupleKey,
+	queryContext *map[string]any,
+	consistency *openfga.ConsistencyPreference,
+) (*client.ClientListRelationsResponse, error) {
+	if len(relations) < 1 {
+		relationsForType, err := getRelationsForType(ctx, clientConfig, fgaClient, object)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list relations due to %w", err)
+		}
+
+		relations = *relationsForType
+
+		if len(relations) < 1 {
+			// there is still no relations.  This means for the model, the corresponding object's type has no relations
+			return &client.ClientListRelationsResponse{
+				Relations: []string{},
+			}, nil
+		}
+	}
+
+	body := &client.ClientListRelationsRequest{
+		User:             user,
+		Object:           object,
+		Relations:        relations,
+		ContextualTuples: contextualTuples,
+		Context:          queryContext,
+	}
+	options := &client.ClientListRelationsOptions{}
+
+	// Don't set if UNSPECIFIED has been provided, it's the default anyway
+	if *consistency != openfga.CONSISTENCYPREFERENCE_UNSPECIFIED {
+		options.Consistency = consistency
+	}
+
+	response, err := fgaClient.ListRelations(ctx).Body(*body).Options(*options).Execute()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list relations due to %w", err)
+	}
+
+	if response.Relations == nil {
+		response.Relations = []string{}
+	}
+
+	return response, nil
+}
+
+// listRelationsCmd represents the listRelations command.
+var listRelationsCmd = &cobra.Command{
+	Use:     "list-relations",
+	Short:   "List Relations",
+	Long:    "List relations that a user has with an object.",
+	Example: `fga query list-relations --store-id=01H0H015178Y2V4CX10C2KGHF4 user:anne document:roadmap --relation can_view --consistency "HIGHER_CONSISTENCY"`, //nolint:lll
+	Args:    cobra.ExactArgs(2),                                                                                                                                 //nolint:mnd,lll
+	RunE: func(cmd *cobra.Command, args []string) error {
+		clientConfig := cmdutils.GetClientConfig(cmd)
+
+		fgaClient, err := clientConfig.GetFgaClient()
+		if err != nil {
+			return fmt.Errorf("failed to initialize FGA Client due to %w", err)
+		}
+
+		contextualTuples, err := cmdutils.ParseContextualTuples(cmd)
+		if err != nil {
+			return fmt.Errorf("error parsing contextual tuples for listRelations: %w", err)
+		}
+
+		queryContext, err := cmdutils.ParseQueryContext(cmd, "context")
+		if err != nil {
+			return fmt.Errorf("error parsing query context for check: %w", err)
+		}
+
+		consistency, err := cmdutils.ParseConsistencyFromCmd(cmd)
+		if err != nil {
+			return fmt.Errorf("error parsing consistency for check: %w", err)
+		}
+
+		relations, _ := cmd.Flags().GetStringArray("relation")
+
+		response, err := listRelations(
+			cmd.Context(),
+			clientConfig,
+			fgaClient,
+			args[0],
+			args[1],
+			relations,
+			contextualTuples,
+			queryContext,
+			consistency,
+		)
+		if err != nil {
+			return err
+		}
+
+		return output.Display(*response)
+	},
+}
+
+func init() {
+	listRelationsCmd.Flags().StringArray("relation", []string{}, "Relation")
+}

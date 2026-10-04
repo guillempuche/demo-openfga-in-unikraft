@@ -1,0 +1,496 @@
+package store
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	openfga "github.com/openfga/go-sdk"
+	"github.com/openfga/go-sdk/client"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/openfga/cli/internal/fga"
+	mockclient "github.com/openfga/cli/internal/mocks"
+	"github.com/openfga/cli/internal/storetest"
+)
+
+const (
+	testModelID = "model-1"
+	testStoreID = "store-1"
+)
+
+func TestImportStore(t *testing.T) {
+	t.Parallel()
+
+	expectedAssertions := []client.ClientAssertion{{
+		User:        "user:anne",
+		Relation:    "reader",
+		Object:      "document:doc1",
+		Expectation: true,
+	}}
+
+	multiUserAssertions := []client.ClientAssertion{
+		{
+			User:        "user:anne",
+			Relation:    "reader",
+			Object:      "document:doc1",
+			Expectation: true,
+		},
+		{
+			User:        "user:peter",
+			Relation:    "reader",
+			Object:      "document:doc1",
+			Expectation: true,
+		},
+	}
+
+	multiObjectAssertions := []client.ClientAssertion{
+		{
+			User:        "user:peter",
+			Relation:    "reader",
+			Object:      "document:doc1",
+			Expectation: true,
+		},
+		{
+			User:        "user:peter",
+			Relation:    "reader",
+			Object:      "document:doc2",
+			Expectation: true,
+		},
+	}
+	modelID, storeID := testModelID, testStoreID
+	expectedOptions := client.ClientWriteAssertionsOptions{AuthorizationModelId: &modelID, StoreId: &storeID}
+
+	importStoreTests := []struct {
+		name                string
+		mockWriteAssertions bool
+		mockCreateStore     bool
+		mockWriteModel      bool
+		testStore           storetest.StoreData
+	}{
+		{
+			name:                "import store with assertions",
+			mockWriteAssertions: true,
+			mockWriteModel:      true,
+			mockCreateStore:     true,
+			testStore: storetest.StoreData{
+				Model: `type user
+                                        type document
+                                                relations
+                                                        define reader: [user]`,
+				Tests: []storetest.ModelTest{
+					{
+						Name: "Test",
+						Check: []storetest.ModelTestCheck{
+							{
+								User:       "user:anne",
+								Object:     "document:doc1",
+								Assertions: map[string]bool{"reader": true},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:                "import store with multi user assertions",
+			mockWriteAssertions: true,
+			mockWriteModel:      true,
+			mockCreateStore:     true,
+			testStore: storetest.StoreData{
+				Model: `type user
+                                       type document
+                                               relations
+                                                       define reader: [user]`,
+				Tests: []storetest.ModelTest{
+					{
+						Name: "Test",
+						Check: []storetest.ModelTestCheck{
+							{
+								Users:      []string{"user:anne", "user:peter"},
+								Object:     "document:doc1",
+								Assertions: map[string]bool{"reader": true},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:                "import store with multi object assertions",
+			mockWriteAssertions: true,
+			mockWriteModel:      true,
+			mockCreateStore:     true,
+			testStore: storetest.StoreData{
+				Model: `type user
+                                        type document
+                                                relations
+                                                        define reader: [user]`,
+				Tests: []storetest.ModelTest{
+					{
+						Name: "Test",
+						Check: []storetest.ModelTestCheck{
+							{
+								User:       "user:peter",
+								Objects:    []string{"document:doc1", "document:doc2"},
+								Assertions: map[string]bool{"reader": true},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:                "create new store without assertions",
+			mockWriteAssertions: false,
+			mockCreateStore:     true,
+			mockWriteModel:      false,
+			testStore:           storetest.StoreData{Name: "test-store"},
+		},
+		{
+			name:                "create new store without check assertions",
+			mockCreateStore:     true,
+			mockWriteModel:      true,
+			mockWriteAssertions: false,
+			testStore: storetest.StoreData{
+				Model: `type user
+					type document
+						relations
+							define reader: [user]`,
+				Tests: []storetest.ModelTest{
+					{
+						Name: "Test",
+						ListObjects: []storetest.ModelTestListObjects{
+							{
+								User:       "user:anne",
+								Type:       "organization",
+								Assertions: map[string][]string{"member": {"organization:acme"}},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:                "do not write assertions if imported store does not have a model",
+			mockCreateStore:     true,
+			mockWriteAssertions: false,
+			testStore: storetest.StoreData{
+				Tests: []storetest.ModelTest{
+					{Name: "Test"},
+				},
+			},
+		},
+	}
+
+	for _, test := range importStoreTests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			mockCtrl := gomock.NewController(t)
+			mockFgaClient := mockclient.NewMockSdkClient(mockCtrl)
+
+			defer mockCtrl.Finish()
+
+			if test.mockWriteAssertions {
+				expected := expectedAssertions
+
+				switch test.name {
+				case "import store with multi user assertions":
+					expected = multiUserAssertions
+				case "import store with multi object assertions":
+					expected = multiObjectAssertions
+				}
+
+				setupWriteAssertionsMock(mockCtrl, mockFgaClient, expected, expectedOptions)
+			} else {
+				mockFgaClient.EXPECT().WriteAssertions(gomock.Any()).Times(0)
+			}
+
+			if test.mockWriteModel {
+				setupWriteModelMock(mockCtrl, mockFgaClient, modelID)
+			}
+
+			if test.mockCreateStore {
+				setupCreateStoreMock(mockCtrl, mockFgaClient, storeID)
+			}
+
+			_, err := importStore(t.Context(), &fga.ClientConfig{}, mockFgaClient, &test.testStore, "", "", 10, 1, "")
+			if err != nil {
+				t.Errorf("expected no error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestImportStoreWithTruncatedAssertions(t *testing.T) {
+	t.Parallel()
+
+	modelID, storeID := testModelID, testStoreID
+	expectedOptions := client.ClientWriteAssertionsOptions{AuthorizationModelId: &modelID, StoreId: &storeID}
+
+	// Generate 150 users to create 150 assertions (exceeding 100 limit)
+	users := make([]string, 150)
+	for i := range 150 {
+		users[i] = "user:" + string(rune('a'+i/26)) + string(rune('a'+i%26))
+	}
+
+	// Only the first 100 assertions should be written
+	first100Assertions := make([]client.ClientAssertion, 100)
+	for i := range 100 {
+		first100Assertions[i] = client.ClientAssertion{
+			User:        users[i],
+			Relation:    "reader",
+			Object:      "document:doc1",
+			Expectation: true,
+		}
+	}
+
+	mockCtrl := gomock.NewController(t)
+	mockFgaClient := mockclient.NewMockSdkClient(mockCtrl)
+
+	defer mockCtrl.Finish()
+
+	// Only expect a single write with the first 100 assertions
+	setupWriteAssertionsMock(mockCtrl, mockFgaClient, first100Assertions, expectedOptions)
+	setupWriteModelMock(mockCtrl, mockFgaClient, modelID)
+	setupCreateStoreMock(mockCtrl, mockFgaClient, storeID)
+
+	testStore := storetest.StoreData{
+		Model: `type user
+                type document
+                        relations
+                                define reader: [user]`,
+		Tests: []storetest.ModelTest{
+			{
+				Name: "Test",
+				Check: []storetest.ModelTestCheck{
+					{
+						Users:      users,
+						Object:     "document:doc1",
+						Assertions: map[string]bool{"reader": true},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := importStore(t.Context(), &fga.ClientConfig{}, mockFgaClient, &testStore, "", "", 10, 1, "")
+	if err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
+}
+
+// TestImportStoreCreatePathContainsModularModel verifies that importing a
+// store without --store-id (the create path) contains the module files of a
+// modular model to the store file's directory, exactly as the update path
+// does: an fga.mod contents entry whose file is a symlink pointing outside the
+// tree must be rejected before any model is written.
+func TestImportStoreCreatePathContainsModularModel(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// The file the module entry escapes to, outside the store directory.
+	outside := filepath.Join(tmpDir, "outside.fga")
+	require.NoError(t, os.WriteFile(outside, []byte("module core\n"), 0o600))
+
+	storeDir := filepath.Join(tmpDir, "store")
+	require.NoError(t, os.Mkdir(storeDir, 0o750))
+
+	modFile := "schema: '1.2'\ncontents:\n  - core.fga\n"
+	require.NoError(t, os.WriteFile(filepath.Join(storeDir, "model.fga.mod"), []byte(modFile), 0o600))
+
+	// The module file named by the fga.mod is a symlink out of the tree.
+	require.NoError(t, os.Symlink(
+		filepath.Join("..", "outside.fga"),
+		filepath.Join(storeDir, "core.fga"),
+	))
+
+	storeFile := filepath.Join(storeDir, "store.fga.yaml")
+	require.NoError(t, os.WriteFile(storeFile, []byte("name: test-store\nmodel_file: model.fga.mod\n"), 0o600))
+
+	format, storeData, err := storetest.ReadFromFile(storeFile, "", false)
+	require.NoError(t, err)
+
+	mockCtrl := gomock.NewController(t)
+	defer mockCtrl.Finish()
+
+	mockFgaClient := mockclient.NewMockSdkClient(mockCtrl)
+
+	setupCreateStoreMock(mockCtrl, mockFgaClient, testStoreID)
+	mockFgaClient.EXPECT().WriteAuthorizationModel(gomock.Any()).Times(0)
+
+	_, err = importStore(t.Context(), &fga.ClientConfig{}, mockFgaClient, storeData, format, "", 10, 1, storeFile)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "core.fga")
+}
+
+func TestUpdateStore(t *testing.T) {
+	t.Parallel()
+
+	expectedAssertions := []client.ClientAssertion{{
+		User:        "user:anne",
+		Relation:    "reader",
+		Object:      "document:doc1",
+		Expectation: true,
+	}}
+
+	modelID := testModelID
+	storeID := testStoreID
+	sampleTime := time.Now()
+	expectedOptions := client.ClientWriteAssertionsOptions{
+		AuthorizationModelId: &modelID,
+		StoreId:              &storeID,
+	}
+
+	importStoreTests := []struct {
+		name                string
+		mockWriteAssertions bool
+		mockGetStore        bool
+		mockWriteModel      bool
+		testStore           storetest.StoreData
+	}{
+		{
+			name:                "update store with assertions",
+			mockWriteAssertions: true,
+			mockGetStore:        true,
+			mockWriteModel:      true,
+			testStore: storetest.StoreData{
+				Name: "test-store",
+				Model: `type user
+					type document
+						relations
+							define reader: [user]`,
+				Tests: []storetest.ModelTest{
+					{
+						Name: "Test",
+						Check: []storetest.ModelTestCheck{
+							{
+								User:   "user:anne",
+								Object: "document:doc1",
+								Assertions: map[string]bool{
+									"reader": true,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:                "update store without assertions",
+			mockWriteAssertions: false,
+			mockGetStore:        true,
+			mockWriteModel:      true,
+			testStore: storetest.StoreData{
+				Name: "test-store",
+				Model: `type user
+					type document
+						relations
+							define reader: [user]`,
+			},
+		},
+	}
+
+	for _, test := range importStoreTests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			clientConfig := fga.ClientConfig{}
+
+			mockCtrl := gomock.NewController(t)
+			defer mockCtrl.Finish()
+
+			mockFgaClient := mockclient.NewMockSdkClient(mockCtrl)
+
+			defer mockCtrl.Finish()
+
+			if test.mockWriteAssertions {
+				setupWriteAssertionsMock(mockCtrl, mockFgaClient, expectedAssertions, expectedOptions)
+			} else {
+				mockFgaClient.EXPECT().WriteAssertions(gomock.Any()).Times(0)
+			}
+
+			if test.mockWriteModel {
+				setupWriteModelMock(mockCtrl, mockFgaClient, modelID)
+			}
+
+			if test.mockGetStore {
+				setupGetStoreMock(mockCtrl, mockFgaClient, storeID, sampleTime)
+			}
+
+			_, err := importStore(t.Context(), &clientConfig, mockFgaClient, &test.testStore, "", storeID, 10, 1, "")
+			if err != nil {
+				t.Errorf("expected no error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestImportStoreRejectsExpressionCondition(t *testing.T) {
+	t.Parallel()
+
+	condition := openfga.NewRelationshipCondition("$expression")
+	condition.SetContext(map[string]any{
+		"expression": "channel_name == 'foo'",
+		"parameters": map[string]any{"channel_name": "string"},
+	})
+
+	tk := openfga.NewTupleKey("agent:alice", "can_call", "tool:foo")
+	tk.Condition = condition
+
+	storeData := storetest.StoreData{
+		Name:   "test",
+		Tuples: []openfga.TupleKey{*tk},
+	}
+
+	_, err := importStore(t.Context(), &fga.ClientConfig{}, nil, &storeData, "", "", 10, 1, "")
+	require.ErrorIs(t, err, errExpressionConditionNotSupported)
+}
+
+func setupGetStoreMock(
+	mockCtrl *gomock.Controller,
+	mockFgaClient *mockclient.MockSdkClient,
+	storeID string,
+	sampleTime time.Time,
+) {
+	mockGetStore := mockclient.NewMockSdkClientGetStoreRequestInterface(mockCtrl)
+	mockFgaClient.EXPECT().GetStore(gomock.Any()).Return(mockGetStore)
+	mockGetStore.EXPECT().Execute().Return(
+		&client.ClientGetStoreResponse{Id: storeID, Name: "test-store", CreatedAt: sampleTime, UpdatedAt: sampleTime},
+		nil,
+	)
+}
+
+func setupCreateStoreMock(mockCtrl *gomock.Controller, mockFgaClient *mockclient.MockSdkClient, storeID string) {
+	mockCreateStore := mockclient.NewMockSdkClientCreateStoreRequestInterface(mockCtrl)
+	mockFgaClient.EXPECT().CreateStore(gomock.Any()).Return(mockCreateStore)
+	mockCreateStore.EXPECT().Body(gomock.Any()).Return(mockCreateStore)
+	mockCreateStore.EXPECT().Execute().Return(&client.ClientCreateStoreResponse{Id: storeID}, nil)
+	mockFgaClient.EXPECT().SetStoreId(storeID)
+}
+
+func setupWriteModelMock(mockCtrl *gomock.Controller, mockFgaClient *mockclient.MockSdkClient, modelID string) {
+	mockWriteModel := mockclient.NewMockSdkClientWriteAuthorizationModelRequestInterface(mockCtrl)
+	mockFgaClient.EXPECT().WriteAuthorizationModel(gomock.Any()).Return(mockWriteModel)
+	mockWriteModel.EXPECT().Body(gomock.Any()).Return(mockWriteModel)
+	mockWriteModel.EXPECT().Execute().Return(
+		&client.ClientWriteAuthorizationModelResponse{AuthorizationModelId: modelID},
+		nil,
+	)
+}
+
+func setupWriteAssertionsMock(
+	mockCtrl *gomock.Controller,
+	mockFgaClient *mockclient.MockSdkClient,
+	expectedAssertions []client.ClientAssertion,
+	expectedOptions client.ClientWriteAssertionsOptions,
+) {
+	mockWriteAssertions := mockclient.NewMockSdkClientWriteAssertionsRequestInterface(mockCtrl)
+	mockFgaClient.EXPECT().WriteAssertions(gomock.Any()).Return(mockWriteAssertions)
+	mockWriteAssertions.EXPECT().Body(expectedAssertions).Return(mockWriteAssertions)
+	mockWriteAssertions.EXPECT().Options(expectedOptions).Return(mockWriteAssertions)
+	mockWriteAssertions.EXPECT().Execute().Return(nil, nil)
+}
