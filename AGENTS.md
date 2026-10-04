@@ -29,6 +29,7 @@ api/                        server.ts, server.test.ts, Kraftfile, Dockerfile
 infrastructure/unikraft/    openfga/ and postgres/ Kraftfiles and Dockerfiles
 scripts/                    env.sh (shared), build, deploy, tunnel, seed, test-remote, verify, cleanup
 docs/RESULTS.md             measured results; docs/1-*, docs/2-* are historical (legacy CLI)
+docs/repos/                 read-only git subtree copies of OpenFGA repos (server, api, js-sdk, cli, language, sample-stores); see docs/repos/README.md
 .github/workflows/ci.yml    CI: model tests, API typecheck + tests, shellcheck, API rootfs build
 ```
 
@@ -83,6 +84,7 @@ Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. 
 - Shell scripts: `#!/usr/bin/env bash`, source `scripts/env.sh`, pass `shellcheck -x -S warning`.
 - The API has no runtime dependencies (only `node:` modules and `fetch`); keep TypeScript to erasable syntax (`erasableSyntaxOnly`).
 - Each `.fga` module has a `.fga.yaml` test file beside it, covering positive, negative and inherited cases.
+- `docs/repos/` is reference material for reading OpenFGA internals: never edit it; update it with `git subtree pull --squash` (see `docs/repos/README.md`).
 
 ## References
 

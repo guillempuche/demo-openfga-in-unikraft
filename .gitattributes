@@ -1,0 +1,3 @@
+# Read-only reference copies of OpenFGA repositories (git subtree). Excluded
+# from GitHub's language statistics and collapsed in diffs.
+docs/repos/** linguist-vendored linguist-generated
