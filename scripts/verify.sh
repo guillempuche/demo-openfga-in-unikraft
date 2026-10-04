@@ -45,10 +45,21 @@ for name in "$OPENFGA_NAME" "$POSTGRES_NAME"; do
     fail "$name is published: $svc"
   fi
 done
-# Only the API may have a public domain in this deployment.
-echo "public domains in the account:"
-unikraft instances list -f name,service.domains -o json |
-  jq -r '.[] | select((.service.domains // []) | length > 0) | "  \(.name): \([.service.domains[].fqdn] | join(", "))"'
+# Only the API may have a public domain in this deployment. Other demo-fga-*
+# instances must not, and neither may tunnel relays (`utils/tunnel`): while a
+# tunnel is open its relay is publicly addressable and forwards to OpenFGA.
+# Unrelated workloads on a shared account are ignored.
+while IFS=$'\t' read -r name image domains; do
+  [[ -z "$name" ]] && continue
+  if [[ "$name" == "$API_NAME" ]]; then
+    echo "$name: public at $domains (expected)"
+  elif [[ "$name" == "$PREFIX"* ]]; then
+    fail "$name is public at $domains"
+  elif [[ "$image" == utils/tunnel* ]]; then
+    fail "tunnel relay $name is public at $domains; close open tunnels (scripts/tunnel.sh) and re-run"
+  fi
+done < <(unikraft instances list -f name,image,service.domains -o json |
+  jq -r '.[] | select((.service.domains // []) | length > 0) | [.name, (.image // ""), ([.service.domains[].fqdn] | join(","))] | @tsv')
 # Ports of OpenFGA (8080 HTTP, 8081 gRPC, 3000 playground, 2112 metrics) and
 # postgres (5432) must not answer on the public load balancer either.
 for port in 8080 8081 3000 2112 5432; do
