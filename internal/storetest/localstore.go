@@ -1,0 +1,118 @@
+package storetest
+
+import (
+	"context"
+	"math"
+
+	"github.com/oklog/ulid/v2"
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+	"github.com/openfga/go-sdk/client"
+	"github.com/openfga/openfga/pkg/server"
+	serverconfig "github.com/openfga/openfga/pkg/server/config"
+	"github.com/openfga/openfga/pkg/storage/memory"
+
+	"github.com/openfga/cli/internal/authorizationmodel"
+)
+
+const writeMaxChunkSize = 40
+
+func initLocalStore(
+	ctx context.Context,
+	fgaServer *server.Server,
+	model *openfgav1.AuthorizationModel,
+	testTuples []client.ClientContextualTupleKey,
+) (*string, *string, error) {
+	var modelID *string
+
+	storeID := ulid.Make().String()
+
+	tuples, err := convertClientTupleKeysToProtoTupleKeys(testTuples)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var authModelWriteReq *openfgav1.WriteAuthorizationModelRequest
+
+	if model != nil {
+		authModelWriteReq = &openfgav1.WriteAuthorizationModelRequest{
+			StoreId:         storeID,
+			TypeDefinitions: model.GetTypeDefinitions(),
+			SchemaVersion:   model.GetSchemaVersion(),
+			Conditions:      model.GetConditions(),
+		}
+	}
+
+	if authModelWriteReq != nil {
+		writtenModel, err := fgaServer.WriteAuthorizationModel(ctx, authModelWriteReq)
+		if err != nil {
+			return nil, nil, err //nolint:wrapcheck
+		}
+
+		modelID = &writtenModel.AuthorizationModelId
+	}
+
+	tuplesLength := len(tuples)
+	if tuplesLength > 0 {
+		for i := 0; i < tuplesLength; i += writeMaxChunkSize {
+			end := int(math.Min(float64(i+writeMaxChunkSize), float64(tuplesLength)))
+			writeChunk := tuples[i:end]
+
+			writeRequest := &openfgav1.WriteRequest{
+				StoreId: storeID,
+				Writes:  &openfgav1.WriteRequestWrites{TupleKeys: writeChunk},
+			}
+
+			_, err := fgaServer.Write(ctx, writeRequest)
+			if err != nil {
+				return nil, nil, err //nolint:wrapcheck
+			}
+		}
+	}
+
+	return &storeID, modelID, nil
+}
+
+func getLocalServerModelAndTuples(
+	storeData *StoreData,
+	format authorizationmodel.ModelFormat,
+	serverConfig LocalServerConfig,
+) (*server.Server, *authorizationmodel.AuthzModel, func(), error) {
+	var fgaServer *server.Server
+
+	var authModel *authorizationmodel.AuthzModel
+
+	stopServerFn := func() {}
+
+	if storeData.Model == "" {
+		return fgaServer, authModel, stopServerFn, nil
+	}
+
+	// If we have at least one local test, initialize the local server
+	datastore := memory.New(
+		memory.WithMaxTypesPerAuthorizationModel(serverConfig.MaxTypesPerAuthorizationModel),
+	)
+
+	fgaServer, err := server.NewServerWithOpts(
+		server.WithDatastore(datastore),
+		server.WithExperimentals(serverconfig.ExperimentalInlineExpressions),
+	)
+	if err != nil {
+		return nil, nil, stopServerFn, err //nolint:wrapcheck
+	}
+
+	tempModel := authorizationmodel.AuthzModel{}
+
+	err = tempModel.ReadModelFromStringContained(storeData.Model, format, storeData.ModelContainBase())
+	if err != nil {
+		return nil, nil, stopServerFn, err //nolint:wrapcheck
+	}
+
+	authModel = &tempModel
+
+	stopServerFn = func() {
+		datastore.Close()
+		fgaServer.Close()
+	}
+
+	return fgaServer, authModel, stopServerFn, nil
+}

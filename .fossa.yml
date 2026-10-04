@@ -1,0 +1,14 @@
+version: 3
+
+server: https://app.fossa.com
+
+project:
+  id: github.com/openfga/cli
+  name: github.com/openfga/cli
+  link: openfga.dev
+  url: github.com/openfga/cli
+
+paths:
+  exclude:
+    - ./NOTICE
+    - ./NOTICE.txt

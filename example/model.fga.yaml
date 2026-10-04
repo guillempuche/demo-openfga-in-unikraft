@@ -1,0 +1,114 @@
+name: FolderBox # store name
+model_file: ./model.fga # a global model that would apply to all tests
+# model can be used instead of model_file
+#model: |
+#  model
+#    schema 1.1
+#  type user
+#  ...
+tuple_file: ./model_tuples.yaml  # global tuples that would apply to all tests
+tuple_files: # global tuples to add multiple tuple files that would apply to all tests
+  - ./model_tuples_2.yaml
+  - ./model_tuples_3.yaml
+# tuples can also be used instead of tuple_file
+#tuples:
+#   - user: folder:5
+#     relation: parent
+#     object: folder:product-2021
+#   - user: folder:product-2021
+#     relation: parent
+#     object: folder:product-2021Q1
+tests:
+  - name: "folder-document-access"
+    description: ""
+     # tuples in tests are appended to the global tuples and do not replace them
+    tuple_file: ./folder-document-access_tuples.json
+    # tuples can also be used instead of tuple_file
+    #tuples:
+    #   - user: folder:5
+    #     relation: parent
+    #     object: folder:product-2021
+    #   - user: folder:product-2021
+    #     relation: parent
+    #     object: folder:product-2021Q1
+    check: # Each check test is made of: a user, an object and the expected result for one or more relations
+      - user: user:anne
+        object: folder:product-2021
+        assertions:
+          can_view: true
+          can_write: true
+          can_share: false
+      - user: user:beth
+        object: folder:product-2021
+        assertions:
+          can_view: true
+          can_write: false
+          can_share: false
+      - user: user:anne
+        object: folder:product-2021Q1
+        assertions:
+          can_view: true
+          can_write: true
+          can_share: false
+      - users:
+          - user:anne
+          - user:beth
+        object: folder:product-2021
+        assertions:
+          # These assertions are run for each user
+          can_view: true
+          can_share: false
+      - user: user:anne
+        objects:
+          - folder:product-2021
+          - folder:product-2021Q1
+        assertions:
+          # These assertions are run for each object
+          can_view: true
+          can_write: true
+      - users:
+          - user:peter
+          - user:john
+        objects:
+          - folder:product-2021
+          - folder:product-2021Q1
+        assertions:
+          # These assertions are run for each user and each object
+          can_view: false
+          can_write: false
+
+    list_objects: # Each list objects test is made of: a user, an object type and the expected result for one or more relations
+      - user: user:anne
+        type: folder
+        assertions:
+          can_view:
+            - folder:product
+            - folder:product-2021
+            - folder:product-2021Q1
+          can_write:
+            - folder:product
+            - folder:product-2021
+            - folder:product-2021Q1
+          can_share:
+            - folder:product
+      - user: user:beth
+        type: folder
+        assertions:
+          can_view:
+            - folder:product-2021
+            - folder:product-2021Q1
+          can_write: []
+          can_share: []
+
+    list_users: # Each list user test is made of: an object, a user filter and the expected result for one or more relations
+      - object: folder:product-2021
+        user_filter:
+          - type: user
+        assertions:
+          can_view:
+            users:
+              - user:anne
+              - user:beth
+          can_write:
+            users:
+              - user:anne

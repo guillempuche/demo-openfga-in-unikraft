@@ -1,0 +1,276 @@
+/*
+Copyright © 2023 OpenFGA
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package tuple
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+
+	openfga "github.com/openfga/go-sdk"
+	"github.com/openfga/go-sdk/client"
+	"github.com/spf13/cobra"
+
+	"github.com/openfga/cli/internal/cmdutils"
+	"github.com/openfga/cli/internal/output"
+	"github.com/openfga/cli/internal/tuple"
+)
+
+// MaxReadPagesLength Limit the tuples so that we are not paginating indefinitely.
+var MaxReadPagesLength = 20
+
+var (
+	// ErrPageSizeNegative is returned when page size is negative.
+	ErrPageSizeNegative = errors.New("page-size must be non-negative")
+	// ErrPageSizeExceedsMax is returned when page size exceeds maximum.
+	ErrPageSizeExceedsMax = errors.New("page-size cannot exceed 100")
+)
+
+type readResponse struct {
+	complete *openfga.ReadResponse
+	simple   []openfga.TupleKey
+}
+
+type readResponseCSVDTO struct {
+	UserType         string
+	UserID           string
+	UserRelation     string
+	Relation         string
+	ObjectType       string
+	ObjectID         string
+	ConditionName    string
+	ConditionContext string
+}
+
+var readResponseCSVHeaders = []string{
+	"user_type",
+	"user_id",
+	"user_relation",
+	"relation",
+	"object_type",
+	"object_id",
+	"condition_name",
+	"condition_context",
+}
+
+func (dto readResponseCSVDTO) MarshalCSV() ([]string, error) {
+	return []string{
+		dto.UserType,
+		dto.UserID,
+		dto.UserRelation,
+		dto.Relation,
+		dto.ObjectType,
+		dto.ObjectID,
+		dto.ConditionName,
+		dto.ConditionContext,
+	}, nil
+}
+
+func (r readResponse) toCsvDTO() ([]readResponseCSVDTO, error) {
+	readResponseDTO := make([]readResponseCSVDTO, 0, len(r.simple))
+
+	for _, readRes := range r.simple {
+		// Handle Condition
+		conditionName := ""
+		conditionalContext := ""
+
+		if readRes.Condition != nil {
+			conditionName = readRes.Condition.Name
+
+			if readRes.Condition.Context != nil {
+				b, err := json.Marshal(readRes.Condition.Context)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert condition context to CSV: %w", err)
+				}
+
+				conditionalContext = string(b)
+			}
+		}
+		// Split User and Object
+		user := strings.Split(readRes.User, ":")
+		object := strings.Split(readRes.Object, ":")
+
+		// Append to DTO
+		readResponseDTO = append(readResponseDTO, readResponseCSVDTO{
+			UserType:         user[0],
+			UserID:           user[1],
+			Relation:         readRes.Relation,
+			ObjectType:       object[0],
+			ObjectID:         object[1],
+			ConditionName:    conditionName,
+			ConditionContext: conditionalContext,
+		})
+	}
+
+	return readResponseDTO, nil
+}
+
+func read(
+	ctx context.Context,
+	fgaClient client.SdkClient,
+	user string,
+	relation string,
+	object string,
+	maxPages int,
+	pageSize int32,
+	consistency *openfga.ConsistencyPreference,
+) (
+	*readResponse, error,
+) {
+	body := &client.ClientReadRequest{}
+	if user != "" {
+		body.User = &user
+	}
+
+	if relation != "" {
+		body.Relation = &relation
+	}
+
+	if object != "" {
+		body.Object = &object
+	}
+
+	response, err := tuple.Read(ctx, fgaClient, body, maxPages, pageSize, consistency)
+	if err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+
+	justKeys := make([]openfga.TupleKey, 0)
+	for _, tuple := range response.GetTuples() {
+		justKeys = append(justKeys, tuple.Key)
+	}
+
+	res := readResponse{complete: &openfga.ReadResponse{Tuples: response.Tuples}, simple: justKeys}
+
+	return &res, nil
+}
+
+// readCmd represents the read command.
+var readCmd = &cobra.Command{
+	Use:     "read",
+	Short:   "Read Relationship Tuples",
+	Long:    "Read relationship tuples that exist in the system (does not evaluate).",
+	Example: "fga tuple read --store-id=01H0H015178Y2V4CX10C2KGHF4 --user user:anne --relation can_view --object document:roadmap", //nolint:lll
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		clientConfig := cmdutils.GetClientConfig(cmd)
+
+		fgaClient, err := clientConfig.GetFgaClient()
+		if err != nil {
+			return fmt.Errorf("failed to initialize FGA Client due to %w", err)
+		}
+
+		user, _ := cmd.Flags().GetString("user")
+		relation, _ := cmd.Flags().GetString("relation")
+		object, _ := cmd.Flags().GetString("object")
+
+		maxPages, err := cmd.Flags().GetInt("max-pages")
+		if err != nil {
+			return fmt.Errorf("failed to parse max pages due to %w", err)
+		}
+
+		pageSize, _ := cmd.Flags().GetInt32("page-size")
+
+		// Validate page-size if explicitly provided
+		if pageSize < 0 {
+			return fmt.Errorf("%w: got %d", ErrPageSizeNegative, pageSize)
+		}
+
+		if pageSize > 100 {
+			return fmt.Errorf("%w: got %d", ErrPageSizeExceedsMax, pageSize)
+		}
+
+		// Apply the new page-size logic based on max-pages
+		if pageSize == 0 {
+			// No page-size specified, apply default logic
+			if maxPages == 0 {
+				// When max-pages=0, default page-size should be 100
+				pageSize = 100
+			} else {
+				// When max-pages!=0, use the default page size
+				pageSize = tuple.DefaultReadPageSize
+			}
+		}
+		// If page-size is specified (non-zero), use whatever is specified
+
+		consistency, err := cmdutils.ParseConsistencyFromCmd(cmd)
+		if err != nil {
+			return fmt.Errorf("error parsing consistency for check: %w", err)
+		}
+
+		response, err := read(cmd.Context(), fgaClient, user, relation, object, maxPages, pageSize, consistency)
+		if err != nil {
+			return err
+		}
+
+		simpleOutput, _ := cmd.Flags().GetBool("simple-output")
+		outputFormat, _ := cmd.Flags().GetString("output-format")
+
+		if outputFormat == "csv" {
+			records, err := response.toCsvDTO()
+			if err != nil {
+				return fmt.Errorf("failed to convert response to csv: %w", err)
+			}
+
+			writer := bufio.NewWriter(os.Stdout)
+			if err := output.MarshalCSV(records, writer, readResponseCSVHeaders...); err != nil {
+				return fmt.Errorf("failed to marshal csv: %w", err)
+			}
+
+			if err := writer.Flush(); err != nil {
+				return fmt.Errorf("failed to display csv: %w", err)
+			}
+
+			return nil
+		}
+
+		dataPrinter := output.NewUniPrinter(outputFormat)
+
+		var data any
+
+		data = *response.complete
+
+		if simpleOutput || outputFormat == "simple-json" {
+			data = response.simple
+		}
+
+		return dataPrinter.Display(data)
+	},
+}
+
+func init() {
+	readCmd.Flags().String("user", "", "User")
+	readCmd.Flags().String("relation", "", "Relation")
+	readCmd.Flags().String("object", "", "Object")
+	readCmd.Flags().Int("max-pages", MaxReadPagesLength, "Max number of pages to get. Set to 0 to get all pages.")
+	readCmd.Flags().Int32("page-size", 0, "Number of tuples to return per page. "+
+		"Defaults to 100 when max-pages=0, or 50 otherwise. Max is 100.")
+	readCmd.Flags().String("output-format", "json", "Specifies the format for data presentation. Valid options: "+
+		"json, simple-json, csv, and yaml.")
+	readCmd.Flags().Bool("simple-output", false, "Output data in simpler version. (It can be used by write and delete commands)") //nolint:lll
+	readCmd.Flags().String(
+		"consistency",
+		"",
+		"Consistency preference for the request. Valid options are HIGHER_CONSISTENCY and MINIMIZE_LATENCY.",
+	)
+
+	_ = readCmd.Flags().MarkDeprecated("simple-output", "the flag \"simple-output\" is deprecated and will be removed"+
+		" in future releases.\nPlease use the \"--output-format=simple-json\" flag instead.")
+}
