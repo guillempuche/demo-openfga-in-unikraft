@@ -23,6 +23,10 @@ jobs:
       # One glob: --tests takes a single path or pattern, so listing two files
       # would silently test only the first.
       - run: fga model test --tests 'authz/models/*.fga.yaml'
+      # Every relation needs a passing true and false check, every type a
+      # list_objects and list_users assertion, and every single-rule break of
+      # the model (mutant) must make a test fail.
+      - run: python3 scripts/check-model-coverage.py
 
   api:
     name: API typecheck and tests
