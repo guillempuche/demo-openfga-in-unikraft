@@ -13,7 +13,7 @@ jobs:
     name: FGA model tests
     runs-on: ubuntu-latest
     env:
-      FGA_VERSION: 0.7.15
+      FGA_VERSION: 0.8.1 # keep in sync with versions.env
     steps:
       - uses: actions/checkout@v4
       - name: Install fga CLI
@@ -47,6 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash -n scripts/*.sh scripts/env.sh
+      - run: ./scripts/check-versions.sh
       - run: shellcheck -x -S warning scripts/*.sh scripts/env.sh
       - run: docker compose -f authz/docker-compose.yaml --env-file authz/.env.example config --quiet
 
