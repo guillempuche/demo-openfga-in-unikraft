@@ -272,7 +272,7 @@ Each run creates a new service with a random FQDN. For a stable name, create the
 
 ### Tunnels create relay instances
 
-`unikraft instances tunnel` starts a `utils/tunnel` instance (128 MiB, random `inst-*` name) that counts against your quota and is removed when the tunnel closes.
+`unikraft instances tunnel` starts a `utils/tunnel` instance (128 MiB, random `inst-*` name) that counts against your quota, has its own public FQDN while open (plain HTTPS to it returns "Service not found", not your service), and is removed when the tunnel closes. Close tunnels when you're done.
 
 ## Authorization models
 

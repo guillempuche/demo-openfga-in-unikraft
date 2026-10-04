@@ -119,6 +119,27 @@ The tunnel creates a relay instance (`utils/tunnel`, 128MiB, random name such as
 - The allocations are generous: OpenFGA and the API each use under 30 MiB. Both could likely run at 128–256MiB.
 - **Cost:** Unikraft prices plans as flat monthly fees with included quotas ([pricing](https://unikraft.com/pricing): Hobby $0 for 2 running instances / 4 GiB; Team $39/month for 8 running / 8 GiB). The `kybrion` quota (16 instances, 4 GiB, 1 vCPU per instance) doesn't match a published plan, so its fee isn't known from here. The demo stays inside that quota, so the expected **marginal cost is $0/month**. Note that on Hobby, the 2-running-instance cap would be hit whenever the API wakes, so Team is the smallest published plan that fits.
 
+## Re-verification after the code-review fixes (2026-10-04, later the same day)
+
+All three images rebuilt from `infrastructure/unikraft/` (after the folder rename) and redeployed from scratch on a new volume, then deleted and run again.
+
+| Check | First deploy | After delete + run |
+| --- | --- | --- |
+| `deploy.sh` (postgres → migrate → openfga → api) | 31 s; migration from schema version 0, exit 0 on the first attempt | 23 s; migration found version 6, exit 0, no changes |
+| Private IPs (postgres / openfga / api) | 10.0.6.137 / 10.0.6.93 / 10.0.6.89 | 10.0.7.241 / 10.0.6.137 / 10.0.6.93 (reused across instances again) |
+| `/health` `resolved` for `demo-fga-openfga.internal` | 10.0.6.93 | 10.0.6.137 |
+| `/bench` p50 (3 runs) | 1.350 / 1.041 / 1.094 ms | 1.340 / 1.018 / 1.057 ms |
+| `/check` alice / mallory | true / false | true / false |
+| `verify.sh` (new: exits non-zero on any failure) | all checks passed | all checks passed |
+| `test-remote.sh` | 10/10 tests, 31/31 checks | 10/10, 31/31; store ID `01M43VXF…` unchanged |
+| No key through the tunnel | `401` | — |
+| Postgres `SHOW max_wal_size` (psql through a tunnel to 5432) | `128MB` (default would be 1GB) | — |
+| API RSS | 26.1 MiB | 26.1 MiB |
+
+- The rebuilt API runs the restructured module (`createApp`, listen only when run directly) correctly in the unikernel.
+- `verify.sh` now lists every instance with a public domain. While a tunnel is open, its relay instance (`inst-*`, image `utils/tunnel`) also has a public FQDN. Plain HTTPS to it returns the platform's "Service not found" page, not OpenFGA; the tunnel itself uses the CLI's relay protocol, whose authentication wasn't examined here. The relay disappears when the tunnel closes.
+- The Postgres rebuild took about a minute: the WAL cap lives in the Kraftfile `cmd`, so Docker reused the cached layers.
+
 ## Build notes
 
 - Building OpenFGA from its Kraftfile failed with `dockerfile context does not exist` until the `rootfs` path was fixed.
