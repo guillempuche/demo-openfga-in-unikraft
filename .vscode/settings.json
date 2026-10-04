@@ -1,5 +1,10 @@
 {
 	"editor.formatOnSave": true,
+	// docs/repos holds read-only upstream OpenFGA sources (git subtree): never
+	// format or edit them, and keep them out of default search and file watching.
+	"files.readonlyInclude": { "docs/repos/**": true },
+	"search.exclude": { "docs/repos/**": true },
+	"files.watcherExclude": { "docs/repos/**": true },
 	"terminal.integrated.defaultProfile.linux": "Nix (auto)",
 	"terminal.integrated.defaultProfile.osx": "Nix (auto zsh)",
 	"terminal.integrated.profiles.linux": {

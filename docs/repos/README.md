@@ -14,6 +14,14 @@ this repository, and the files keep their upstream licenses (Apache-2.0).
 | `language/` | https://github.com/openfga/language (DSL, model tests) | `main` at vendoring time |
 | `sample-stores/` | https://github.com/openfga/sample-stores | `main` at vendoring time |
 
+How the rest of the repository keeps away from this folder:
+
+- CI, scripts and tests only touch `authz/`, `api/` and `scripts/`; GitHub runs workflows from the root `.github/` only, so the upstream workflows here never run.
+- `.ignore` hides it from `rg` and tools built on it unless you pass the path explicitly.
+- `.gitattributes` marks it vendored (excluded from language statistics and code search).
+- `.vscode/settings.json` makes it read-only and excludes it from search and file watching.
+- Upstream `AGENTS.md`, `CLAUDE.md` and Copilot instruction files in here apply to those projects, not to this repository.
+
 Don't edit these files. To update one, pull a newer ref:
 
 ```bash

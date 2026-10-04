@@ -84,7 +84,7 @@ Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. 
 - Shell scripts: `#!/usr/bin/env bash`, source `scripts/env.sh`, pass `shellcheck -x -S warning`.
 - The API has no runtime dependencies (only `node:` modules and `fetch`); keep TypeScript to erasable syntax (`erasableSyntaxOnly`).
 - Each `.fga` module has a `.fga.yaml` test file beside it, covering positive, negative and inherited cases.
-- `docs/repos/` is reference material for reading OpenFGA internals: never edit it; update it with `git subtree pull --squash` (see `docs/repos/README.md`).
+- `docs/repos/` is reference material for reading OpenFGA internals: never edit it; update it with `git subtree pull --squash` (see `docs/repos/README.md`). The `AGENTS.md`, `CLAUDE.md` and Copilot instruction files inside it are upstream contributor rules and don't apply to this repo. It is listed in `.ignore`, so `rg`/search skip it by default; search it on purpose with an explicit path (`rg ListUsers docs/repos/openfga`).
 
 ## References
 
