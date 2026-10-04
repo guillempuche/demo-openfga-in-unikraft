@@ -1,0 +1,1052 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/oklog/ulid/v2"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
+	"go.uber.org/mock/gomock"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+	parser "github.com/openfga/language/pkg/go/transformer"
+
+	"github.com/openfga/openfga/cmd/util"
+	mockstorage "github.com/openfga/openfga/internal/mocks"
+	"github.com/openfga/openfga/pkg/logger"
+	"github.com/openfga/openfga/pkg/server/commands/v2breaking"
+	serverErrors "github.com/openfga/openfga/pkg/server/errors"
+	"github.com/openfga/openfga/pkg/storage"
+	"github.com/openfga/openfga/pkg/storage/memory"
+	"github.com/openfga/openfga/pkg/storage/test"
+	"github.com/openfga/openfga/pkg/testutils"
+	"github.com/openfga/openfga/pkg/tuple"
+	"github.com/openfga/openfga/pkg/typesystem"
+)
+
+func TestListUsersValidation(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	model := `
+		model
+			schema 1.1
+		type user
+
+		type document
+			relations
+				define viewer: [user]`
+
+	tests := []struct {
+		name              string
+		req               *openfgav1.ListUsersRequest
+		model             string
+		expectedErrorCode codes.Code
+	}{
+		{
+			name: "invalid_user_filter_type",
+			req: &openfgav1.ListUsersRequest{
+				Object:   &openfgav1.Object{Type: "document", Id: "1"},
+				Relation: "viewer",
+				UserFilters: []*openfgav1.UserTypeFilter{
+					{
+						Type: "folder", // invalid type
+					},
+				},
+			},
+			model:             model,
+			expectedErrorCode: codes.Code(2021),
+		},
+		{
+			name: "invalid_user_filter_relation",
+			req: &openfgav1.ListUsersRequest{
+				Object:   &openfgav1.Object{Type: "document", Id: "1"},
+				Relation: "viewer",
+				UserFilters: []*openfgav1.UserTypeFilter{
+					{
+						Type:     "user",
+						Relation: "editor", // invalid relation
+					},
+				},
+			},
+			model:             model,
+			expectedErrorCode: codes.Code(2022),
+		},
+		{
+			name: "invalid_target_object_type",
+			req: &openfgav1.ListUsersRequest{
+				Object: &openfgav1.Object{
+					Type: "folder", // invalid type
+					Id:   "1",
+				},
+				Relation: "viewer",
+				UserFilters: []*openfgav1.UserTypeFilter{
+					{
+						Type: "user",
+					},
+				},
+			},
+			model:             model,
+			expectedErrorCode: codes.Code(2021),
+		},
+		{
+			name: "invalid_relation",
+			req: &openfgav1.ListUsersRequest{
+				Object:   &openfgav1.Object{Type: "document", Id: "1"},
+				Relation: "owner", // invalid relation
+				UserFilters: []*openfgav1.UserTypeFilter{
+					{
+						Type: "user",
+					},
+				},
+			},
+			model:             model,
+			expectedErrorCode: codes.Code(2022),
+		},
+		{
+			name: "contextual_tuple_invalid_object_type",
+			req: &openfgav1.ListUsersRequest{
+				Object:      &openfgav1.Object{Type: "document", Id: "1"},
+				Relation:    "viewer",
+				UserFilters: []*openfgav1.UserTypeFilter{{Type: "user"}},
+				ContextualTuples: []*openfgav1.TupleKey{
+					tuple.NewTupleKey("invalid_object_type:1", "viewer", "user:will"),
+				},
+			},
+			model:             model,
+			expectedErrorCode: codes.Code(2027),
+		},
+		{
+			name: "contextual_tuple_invalid_user_type",
+			req: &openfgav1.ListUsersRequest{
+				Object:      &openfgav1.Object{Type: "document", Id: "1"},
+				Relation:    "viewer",
+				UserFilters: []*openfgav1.UserTypeFilter{{Type: "user"}},
+				ContextualTuples: []*openfgav1.TupleKey{
+					tuple.NewTupleKey("document:1", "viewer", "invalid_user_type:will"),
+				},
+			},
+			model:             model,
+			expectedErrorCode: codes.Code(2027),
+		},
+		{
+			name: "contextual_tuple_invalid_relation",
+			req: &openfgav1.ListUsersRequest{
+				Object:      &openfgav1.Object{Type: "document", Id: "1"},
+				Relation:    "viewer",
+				UserFilters: []*openfgav1.UserTypeFilter{{Type: "user"}},
+				ContextualTuples: []*openfgav1.TupleKey{
+					tuple.NewTupleKey("document:1", "invalid_relation", "user:will"),
+				},
+			},
+			model:             model,
+			expectedErrorCode: codes.Code(2027),
+		},
+	}
+
+	storeID := ulid.Make().String()
+	for _, test := range tests {
+		ds := memory.New()
+		t.Cleanup(ds.Close)
+		model := testutils.MustTransformDSLToProtoWithID(test.model)
+
+		t.Run(test.name, func(t *testing.T) {
+			typesys, err := typesystem.NewAndValidate(context.Background(), model)
+			require.NoError(t, err)
+
+			err = ds.WriteAuthorizationModel(context.Background(), storeID, model)
+			require.NoError(t, err)
+
+			s := MustNewServerWithOpts(
+				WithDatastore(ds),
+			)
+			t.Cleanup(s.Close)
+
+			ctx := typesystem.ContextWithTypesystem(context.Background(), typesys)
+
+			test.req.AuthorizationModelId = model.GetId()
+			test.req.StoreId = storeID
+
+			_, err = s.ListUsers(ctx, test.req)
+			e, ok := status.FromError(err)
+			require.True(t, ok)
+			require.Equal(t, test.expectedErrorCode, e.Code())
+		})
+	}
+}
+
+func TestModelIdNotFound(t *testing.T) {
+	ctx := context.Background()
+
+	req := &openfgav1.ListUsersRequest{
+		StoreId: ulid.Make().String(),
+		Object: &openfgav1.Object{
+			Type: "document",
+			Id:   "1",
+		},
+		Relation: "viewer",
+		UserFilters: []*openfgav1.UserTypeFilter{
+			{Type: "user"},
+		},
+	}
+
+	mockController := gomock.NewController(t)
+	defer mockController.Finish()
+
+	mockDatastore := mockstorage.NewMockOpenFGADatastore(mockController)
+	mockDatastore.EXPECT().FindLatestAuthorizationModel(gomock.Any(), gomock.Any()).Return(nil, storage.ErrNotFound)
+
+	server := MustNewServerWithOpts(
+		WithDatastore(mockDatastore),
+	)
+	t.Cleanup(func() {
+		mockDatastore.EXPECT().Close().Times(1)
+		server.Close()
+	})
+
+	resp, err := server.ListUsers(ctx, req)
+	require.Nil(t, resp)
+	require.Error(t, err)
+
+	e, ok := status.FromError(err)
+	require.True(t, ok)
+	require.Equal(t, codes.Code(2020), e.Code())
+}
+
+func TestExperimentalListUsers(t *testing.T) {
+	ctx := context.Background()
+
+	storeID := ulid.Make().String()
+
+	req := &openfgav1.ListUsersRequest{
+		StoreId: storeID,
+		Object: &openfgav1.Object{
+			Type: "document",
+			Id:   "1",
+		},
+		Relation: "viewer",
+		UserFilters: []*openfgav1.UserTypeFilter{
+			{Type: "user"},
+		},
+	}
+	mockController := gomock.NewController(t)
+	defer mockController.Finish()
+
+	mockDatastore := mockstorage.NewMockOpenFGADatastore(mockController)
+
+	server := MustNewServerWithOpts(
+		WithDatastore(mockDatastore),
+	)
+	t.Cleanup(func() {
+		mockDatastore.EXPECT().Close().Times(1)
+		server.Close()
+	})
+
+	t.Run("list_users_returns_error_if_latest_model_not_found", func(t *testing.T) {
+		mockDatastore.EXPECT().FindLatestAuthorizationModel(gomock.Any(), gomock.Any()).Return(nil, storage.ErrNotFound) // error demonstrates that main code path is reached
+
+		_, err := server.ListUsers(ctx, req)
+
+		st, ok := status.FromError(err)
+		require.True(t, ok)
+		require.Equal(t, codes.Code(openfgav1.ErrorCode_latest_authorization_model_not_found), st.Code())
+	})
+
+	t.Run("list_users_returns_error_if_model_not_found", func(t *testing.T) {
+		mockDatastore.EXPECT().
+			ReadAuthorizationModel(gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(nil, storage.ErrNotFound)
+
+		_, err := server.ListUsers(ctx, &openfgav1.ListUsersRequest{
+			StoreId:              storeID,
+			AuthorizationModelId: ulid.Make().String(),
+			Object: &openfgav1.Object{
+				Type: "document",
+				Id:   "1",
+			},
+			Relation: "viewer",
+			UserFilters: []*openfgav1.UserTypeFilter{
+				{Type: "user"},
+			},
+		})
+
+		st, ok := status.FromError(err)
+		require.True(t, ok)
+		require.Equal(t, codes.Code(openfgav1.ErrorCode_authorization_model_not_found), st.Code())
+	})
+}
+
+func TestListUsers_ErrorCases(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	ctx := context.Background()
+	store := ulid.Make().String()
+
+	t.Run("graph_resolution_errors", func(t *testing.T) {
+		s := MustNewServerWithOpts(
+			WithDatastore(memory.New()),
+			WithResolveNodeLimit(2),
+		)
+		t.Cleanup(s.Close)
+
+		writeModelResp, err := s.WriteAuthorizationModel(ctx, &openfgav1.WriteAuthorizationModelRequest{
+			StoreId:       store,
+			SchemaVersion: typesystem.SchemaVersion1_1,
+			TypeDefinitions: parser.MustTransformDSLToProto(`
+				model
+					schema 1.1
+				type user
+
+				type group
+					relations
+						define member: [user, group#member]
+
+				type document
+					relations
+						define viewer: [group#member]`).GetTypeDefinitions(),
+		})
+		require.NoError(t, err)
+
+		_, err = s.Write(ctx, &openfgav1.WriteRequest{
+			StoreId: store,
+			Writes: &openfgav1.WriteRequestWrites{
+				TupleKeys: []*openfgav1.TupleKey{
+					tuple.NewTupleKey("document:1", "viewer", "group:1#member"),
+					tuple.NewTupleKey("group:1", "member", "group:2#member"),
+					tuple.NewTupleKey("group:2", "member", "group:3#member"),
+					tuple.NewTupleKey("group:3", "member", "user:jon"),
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		t.Run("resolution_depth_exceeded_error_unary", func(t *testing.T) {
+			res, err := s.ListUsers(ctx, &openfgav1.ListUsersRequest{
+				StoreId:              store,
+				AuthorizationModelId: writeModelResp.GetAuthorizationModelId(),
+				Relation:             "viewer",
+				Object: &openfgav1.Object{
+					Type: "document",
+					Id:   "1",
+				},
+				UserFilters: []*openfgav1.UserTypeFilter{{Type: "user"}},
+			})
+
+			require.Nil(t, res)
+			require.ErrorIs(t, err, serverErrors.ErrAuthorizationModelResolutionTooComplex)
+		})
+	})
+}
+
+func TestListUsers_Deadline(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	ctx := context.Background()
+
+	t.Run("return_no_error_and_partial_results_at_deadline", func(t *testing.T) {
+		ds := memory.New()
+		t.Cleanup(ds.Close)
+
+		modelStr := `
+			model
+				schema 1.1
+			type user
+
+			type group
+			relations
+				define member: [user]
+
+			type document
+			relations
+				define viewer: [user, group#member]`
+
+		tuples := []string{
+			"document:1#viewer@user:jon",
+			"document:1#viewer@group:fga#member",
+			"group:fga#member@user:maria",
+		}
+
+		storeID, model := test.BootstrapFGAStore(t, ds, modelStr, tuples)
+
+		ds = mockstorage.NewMockSlowDataStorage(ds, 20*time.Millisecond)
+		t.Cleanup(ds.Close)
+
+		s := MustNewServerWithOpts(
+			WithDatastore(ds),
+			WithListUsersDeadline(30*time.Millisecond), // 30ms is enough for first read, but not others
+		)
+		t.Cleanup(s.Close)
+
+		resp, err := s.ListUsers(ctx, &openfgav1.ListUsersRequest{
+			StoreId:              storeID,
+			AuthorizationModelId: model.GetId(),
+			Object: &openfgav1.Object{
+				Type: "document",
+				Id:   "1",
+			},
+			Relation: "viewer",
+			UserFilters: []*openfgav1.UserTypeFilter{
+				{Type: "user"},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Len(t, resp.GetUsers(), 1)
+	})
+
+	t.Run("return_no_error_and_partial_results_if_throttled_until_deadline", func(t *testing.T) {
+		ds := memory.New()
+		t.Cleanup(ds.Close)
+
+		modelStr := `
+			model
+				schema 1.1
+			type user
+
+			type group
+			relations
+				define member: [user, group#member]
+
+			type document
+			relations
+				define viewer: [user, group#member]`
+
+		tuples := []string{
+			"document:1#viewer@user:jon", // Observed before first dispatch
+			"document:1#viewer@group:eng#member",
+			"group:eng#member@group:backend#member",
+			"group:backend#member@user:tyler", // Requires two dispatches, gets throtled
+		}
+
+		storeID, model := test.BootstrapFGAStore(t, ds, modelStr, tuples)
+		t.Cleanup(ds.Close)
+
+		deadline := 30 * time.Millisecond
+
+		s := MustNewServerWithOpts(
+			WithDatastore(ds),
+			WithListUsersDeadline(deadline),
+			WithListUsersDispatchThrottlingEnabled(true),
+			WithListUsersDispatchThrottlingThreshold(1),          // Applies throttling after first dispatch
+			WithListUsersDispatchThrottlingFrequency(2*deadline), // Forces time-out when throttling occurs
+		)
+		t.Cleanup(s.Close)
+
+		resp, err := s.ListUsers(ctx, &openfgav1.ListUsersRequest{
+			StoreId:              storeID,
+			AuthorizationModelId: model.GetId(),
+			Object: &openfgav1.Object{
+				Type: "document",
+				Id:   "1",
+			},
+			Relation: "viewer",
+			UserFilters: []*openfgav1.UserTypeFilter{
+				{Type: "user"},
+			},
+		})
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Len(t, resp.GetUsers(), 1)
+	})
+
+	t.Run("internal_error_without_meeting_deadline", func(t *testing.T) {
+		mockController := gomock.NewController(t)
+		t.Cleanup(mockController.Finish)
+
+		mockDatastore := mockstorage.NewMockOpenFGADatastore(mockController)
+
+		storeID := ulid.Make().String()
+		modelID := ulid.Make().String()
+
+		mockDatastore.EXPECT().
+			ReadAuthorizationModel(gomock.Any(), storeID, modelID).
+			Return(
+				testutils.MustTransformDSLToProtoWithID(`
+					model
+						schema 1.1
+					type user
+
+					type document
+						relations
+							define viewer: [user]`),
+				nil,
+			).
+			Times(1)
+		mockDatastore.EXPECT().Close().Times(1)
+
+		mockDatastore.EXPECT().
+			Read(gomock.Any(), storeID, gomock.Any(), gomock.Any()).
+			Return(nil, fmt.Errorf("internal error from storage")).
+			Times(1)
+
+		s := MustNewServerWithOpts(
+			WithDatastore(mockDatastore),
+			WithListUsersDeadline(1*time.Minute),
+		)
+		t.Cleanup(s.Close)
+
+		resp, err := s.ListUsers(ctx, &openfgav1.ListUsersRequest{
+			StoreId:              storeID,
+			AuthorizationModelId: modelID,
+			Object: &openfgav1.Object{
+				Type: "document",
+				Id:   "1",
+			},
+			Relation: "viewer",
+			UserFilters: []*openfgav1.UserTypeFilter{
+				{Type: "user"},
+			},
+		})
+		require.Nil(t, resp)
+
+		st, ok := status.FromError(err)
+		require.True(t, ok)
+		require.Equal(t, codes.Code(openfgav1.InternalErrorCode_internal_error), st.Code())
+	})
+
+	t.Run("internal_storage_error_after_deadline", func(t *testing.T) {
+		mockController := gomock.NewController(t)
+		t.Cleanup(mockController.Finish)
+
+		mockDatastore := mockstorage.NewMockOpenFGADatastore(mockController)
+
+		storeID := ulid.Make().String()
+		modelID := ulid.Make().String()
+
+		mockDatastore.EXPECT().
+			ReadAuthorizationModel(gomock.Any(), storeID, modelID).
+			Return(
+				testutils.MustTransformDSLToProtoWithID(`
+					model
+						schema 1.1
+					type user
+
+					type document
+						relations
+							define viewer: [user]`),
+				nil,
+			).
+			Times(1)
+
+		mockDatastore.EXPECT().
+			Read(gomock.Any(), storeID, gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, storeID string, filter storage.ReadFilter, _ storage.ReadOptions) (storage.TupleIterator, error) {
+				time.Sleep(10 * time.Millisecond)
+				return nil, context.Canceled
+			}).
+			Times(1)
+		mockDatastore.EXPECT().Close().Times(1)
+
+		s := MustNewServerWithOpts(
+			WithDatastore(mockDatastore),
+			WithListUsersDeadline(5*time.Millisecond),
+		)
+		t.Cleanup(s.Close)
+
+		resp, err := s.ListUsers(ctx, &openfgav1.ListUsersRequest{
+			StoreId:              storeID,
+			AuthorizationModelId: modelID,
+			Object: &openfgav1.Object{
+				Type: "document",
+				Id:   "1",
+			},
+			Relation: "viewer",
+			UserFilters: []*openfgav1.UserTypeFilter{
+				{Type: "user"},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Empty(t, resp.GetUsers())
+	})
+}
+
+func TestUserFiltersToString(t *testing.T) {
+	require.Equal(t, "user", userFiltersToString([]*openfgav1.UserTypeFilter{{
+		Type: "user",
+	}}))
+
+	require.Equal(t, "group#member", userFiltersToString([]*openfgav1.UserTypeFilter{{
+		Type:     "group",
+		Relation: "member",
+	}}))
+}
+
+func TestListUsers_WithListUsersDatabaseThrottle(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	ctx := context.Background()
+
+	t.Run("WithListUsersDatabaseThrottle_option_sets_configuration", func(t *testing.T) {
+		ds := memory.New()
+		t.Cleanup(ds.Close)
+
+		modelStr := `
+			model
+				schema 1.1
+			type user
+			type document
+				relations
+					define viewer: [user]`
+
+		storeID, model := test.BootstrapFGAStore(t, ds, modelStr, []string{
+			"document:1#viewer@user:jon",
+		})
+
+		threshold := 100
+		duration := 50 * time.Millisecond
+
+		// Create server with datastore throttling options
+		s := MustNewServerWithOpts(
+			WithDatastore(ds),
+			WithListUsersDatabaseThrottle(threshold, duration),
+		)
+		t.Cleanup(s.Close)
+
+		// Verify the options were set correctly
+		require.Equal(t, threshold, s.listUsersDatastoreThrottleThreshold)
+		require.Equal(t, duration, s.listUsersDatastoreThrottleDuration)
+
+		// Verify the endpoint still works correctly
+		resp, err := s.ListUsers(ctx, &openfgav1.ListUsersRequest{
+			StoreId:              storeID,
+			AuthorizationModelId: model.GetId(),
+			Object: &openfgav1.Object{
+				Type: "document",
+				Id:   "1",
+			},
+			Relation: "viewer",
+			UserFilters: []*openfgav1.UserTypeFilter{
+				{Type: "user"},
+			},
+		})
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Len(t, resp.GetUsers(), 1)
+	})
+}
+
+// setupListUsersServer mirrors setupCheckServer in check_test.go but for the
+// ListUsers entrypoint. It returns the server and a base ListUsersRequest with
+// store and model IDs populated. Callers fill in object, relation, and user
+// filters. Defaults (when modelDSL == "" / tuples == nil) match a simple
+// `viewer: [user]` model with `document:1#viewer @ user:alice`.
+func setupListUsersServer(t *testing.T, modelDSL string, tuples []*openfgav1.TupleKey, opts ...OpenFGAServiceV1Option) (*Server, *openfgav1.ListUsersRequest) {
+	t.Helper()
+
+	if modelDSL == "" {
+		modelDSL = `
+			model
+				schema 1.1
+			type user
+			type document
+				relations
+					define viewer: [user]
+		`
+	}
+
+	if tuples == nil {
+		tuples = []*openfgav1.TupleKey{
+			tuple.NewTupleKey("document:1", "viewer", "user:alice"),
+		}
+	}
+
+	_, ds, _ := util.MustBootstrapDatastore(t, "memory")
+
+	defaultOpts := append([]OpenFGAServiceV1Option{WithDatastore(ds)}, opts...)
+	s := MustNewServerWithOpts(defaultOpts...)
+	t.Cleanup(s.Close)
+
+	ctx := context.Background()
+
+	createStoreResp, err := s.CreateStore(ctx, &openfgav1.CreateStoreRequest{Name: "list-users-test"})
+	require.NoError(t, err)
+	storeID := createStoreResp.GetId()
+
+	model := testutils.MustTransformDSLToProtoWithID(modelDSL)
+	writeModelResp, err := s.WriteAuthorizationModel(ctx, &openfgav1.WriteAuthorizationModelRequest{
+		StoreId:         storeID,
+		SchemaVersion:   model.GetSchemaVersion(),
+		TypeDefinitions: model.GetTypeDefinitions(),
+	})
+	require.NoError(t, err)
+	modelID := writeModelResp.GetAuthorizationModelId()
+
+	if len(tuples) > 0 {
+		_, err = s.Write(ctx, &openfgav1.WriteRequest{
+			StoreId:              storeID,
+			AuthorizationModelId: modelID,
+			Writes:               &openfgav1.WriteRequestWrites{TupleKeys: tuples},
+		})
+		require.NoError(t, err)
+	}
+
+	return s, &openfgav1.ListUsersRequest{
+		StoreId:              storeID,
+		AuthorizationModelId: modelID,
+	}
+}
+
+// TestListUsersBreakingChangeLog drives an end-to-end ListUsers call with an
+// in-memory store, captures emitted logs via a zap observer, and asserts that
+// the "potential v2 ListUsers resolution breaking change" log fires (or
+// doesn't) for each shape — combining the shape predicate
+// (v2breaking.ListUsersReason) and the response-side confirmation
+// (ListUsersResponseConfirmsReason) in a single test.
+func TestListUsersBreakingChangeLog(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	const logMessage = "potential v2 ListUsers resolution breaking change"
+
+	tests := []struct {
+		name       string
+		modelDSL   string
+		tuples     []*openfgav1.TupleKey
+		object     *openfgav1.Object
+		relation   string
+		filter     *openfgav1.UserTypeFilter
+		wantReason string // empty means: expect no log
+	}{
+		{
+			name: "alias_userset",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define reader: [user]
+						define allowed: reader
+						define viewer: [user, document#allowed]
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("document:d1", "viewer", "document:d2#allowed"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "document", Relation: "reader"},
+			wantReason: v2breaking.ReasonAliasUserset,
+		},
+		{
+			name: "self_referential_userset",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define viewer: [user]
+			`,
+			tuples:     []*openfgav1.TupleKey{},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "document", Relation: "viewer"},
+			wantReason: v2breaking.ReasonSelfReferentialUserset,
+		},
+		{
+			name: "computed_userset_self_object",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define editor: [user]
+						define writer: [user]
+						define viewer: editor or writer
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("document:d1", "editor", "user:alice"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "document", Relation: "writer"},
+			wantReason: v2breaking.ReasonComputedUsersetSelfObj,
+		},
+		{
+			name: "ttu_userset",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type folder
+					relations
+						define viewer: [user]
+				type document
+					relations
+						define parent: [folder]
+						define viewer: viewer from parent
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("document:d1", "parent", "folder:f1"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "folder", Relation: "viewer"},
+			wantReason: v2breaking.ReasonTTUUserset,
+		},
+		{
+			name: "userset_with_exclusion",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define member: [user]
+						define owner: [user]
+						define viewer: [user, document#owner] but not member
+			`,
+			tuples: []*openfgav1.TupleKey{
+				// Direct viewer tuple so the difference's base leaf has a user.
+				tuple.NewTupleKey("document:d1", "viewer", "document:d2#owner"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "document", Relation: "owner"},
+			wantReason: v2breaking.ReasonUsersetWithExclusion,
+		},
+		{
+			name: "wildcard_with_exclusion",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define public: [user:*]
+						define blocked: [user]
+						define viewer: public but not blocked
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("document:d1", "public", "user:*"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "user"},
+			wantReason: v2breaking.ReasonWildcardWithExclusion,
+		},
+		{
+			name: "wildcard_with_exclusion_via_ttu",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type folder
+					relations
+						define blocked: [user]
+						define viewer: [user, user:*] but not blocked
+				type document
+					relations
+						define parent: [folder]
+						define viewer: viewer from parent
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("document:d1", "parent", "folder:f1"),
+				tuple.NewTupleKey("folder:f1", "viewer", "user:*"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "user"},
+			wantReason: v2breaking.ReasonWildcardWithExclusion,
+		},
+		{
+			// Regression: recursive TTU (folder#parent points to folder) used
+			// to cause unbounded recursion in walkForWildcardUnderDifference
+			// when the target rewrite already contains a Difference. The
+			// visited-set guard must terminate the walk while still returning
+			// the correct reason.
+			name: "wildcard_with_exclusion_recursive_ttu_terminates",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type folder
+					relations
+						define parent: [folder]
+						define blocked: [user]
+						define local_viewer: [user, user:*]
+						define viewer: (local_viewer or viewer from parent) but not blocked
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("folder:f1", "local_viewer", "user:*"),
+			},
+			object:     &openfgav1.Object{Type: "folder", Id: "f1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "user"},
+			wantReason: v2breaking.ReasonWildcardWithExclusion,
+		},
+		{
+			name: "no_match_alias_userset",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define reader: [user]
+						define allowed: reader
+						define viewer: [user, document#allowed]
+			`,
+			tuples:     []*openfgav1.TupleKey{},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "document", Relation: "reader"},
+			wantReason: "",
+		},
+		{
+			name: "no_match_ttu_userset",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type folder
+					relations
+						define viewer: [user]
+				type document
+					relations
+						define parent: [folder]
+						define viewer: viewer from parent
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("document:seed", "parent", "folder:seed"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "folder", Relation: "viewer"},
+			wantReason: "",
+		},
+		{
+			name: "no_match_user_is_not_userset",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define viewer: [user]
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("document:d1", "viewer", "user:alice"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "user"},
+			wantReason: "",
+		},
+		{
+			name: "no_match_direct_userset_assignable",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type group
+					relations
+						define member: [user]
+				type document
+					relations
+						define viewer: [user, group#member]
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("document:seed", "viewer", "user:seed"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "group", Relation: "member"},
+			wantReason: "",
+		},
+		{
+			// Same object as target, but user's relation is not a ComputedUserset leaf
+			// in the rewrite. computed_userset_self_object must NOT fire.
+			name: "no_match_computed_userset_relation_not_in_rewrite",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define editor: [user]
+						define writer: [user]
+						define other: [user]
+						define viewer: editor or writer
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("document:seed", "editor", "user:seed"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "document", Relation: "other"},
+			wantReason: "",
+		},
+		{
+			// TTU exists (viewer from parent) but the user's relation does not match
+			// the TTU's computed relation. ttu_userset must NOT fire.
+			name: "no_match_ttu_user_relation_mismatch",
+			modelDSL: `
+				model
+					schema 1.1
+				type user
+				type folder
+					relations
+						define viewer: [user]
+						define editor: [user]
+				type document
+					relations
+						define parent: [folder]
+						define viewer: viewer from parent
+			`,
+			tuples: []*openfgav1.TupleKey{
+				tuple.NewTupleKey("document:seed", "parent", "folder:seed"),
+			},
+			object:     &openfgav1.Object{Type: "document", Id: "d1"},
+			relation:   "viewer",
+			filter:     &openfgav1.UserTypeFilter{Type: "folder", Relation: "editor"},
+			wantReason: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			core, logs := observer.New(zap.InfoLevel)
+			testLogger := &logger.ZapLogger{Logger: zap.New(core)}
+
+			s, baseReq := setupListUsersServer(t, tc.modelDSL, tc.tuples, WithLogger(testLogger))
+
+			_, err := s.ListUsers(context.Background(), &openfgav1.ListUsersRequest{
+				StoreId:              baseReq.GetStoreId(),
+				AuthorizationModelId: baseReq.GetAuthorizationModelId(),
+				Object:               tc.object,
+				Relation:             tc.relation,
+				UserFilters:          []*openfgav1.UserTypeFilter{tc.filter},
+			})
+			require.NoError(t, err)
+
+			breakingLogs := logs.FilterMessage(logMessage)
+			if tc.wantReason == "" {
+				require.Equal(t, 0, breakingLogs.Len(), "expected no breaking-change log")
+				return
+			}
+			require.Equal(t, 1, breakingLogs.Len(), "expected exactly one breaking-change log")
+			fields := fieldMap(breakingLogs.All()[0].Context)
+			require.Equal(t, tc.wantReason, fields["reason"])
+		})
+	}
+}

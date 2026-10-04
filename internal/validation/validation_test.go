@@ -1,0 +1,1603 @@
+package validation
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/structpb"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+	parser "github.com/openfga/language/pkg/go/transformer"
+
+	"github.com/openfga/openfga/pkg/testutils"
+	"github.com/openfga/openfga/pkg/tuple"
+	"github.com/openfga/openfga/pkg/typesystem"
+)
+
+func TestValidateTupleForWrite(t *testing.T) {
+	tests := []struct {
+		name          string
+		tuple         *openfgav1.TupleKey
+		model         *openfgav1.AuthorizationModel
+		expectedError error
+	}{
+		{
+			name:  "malformed_object_1",
+			tuple: tuple.NewTupleKey("group#group1:member", "relation", "user:jon"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("invalid 'object' field format"),
+				TupleKey: tuple.NewTupleKey("group#group1:member", "relation", "user:jon"),
+			},
+		},
+		{
+			name:  "malformed_object_2",
+			tuple: tuple.NewTupleKey("repo:sand castle", "relation", "user:jon"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("invalid 'object' field format"),
+				TupleKey: tuple.NewTupleKey("repo:sand castle", "relation", "user:jon"),
+			},
+		},
+		{
+			name:  "malformed_object_3",
+			tuple: tuple.NewTupleKey("fga", "relation", "user:jon"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("invalid 'object' field format"),
+				TupleKey: tuple.NewTupleKey("fga", "relation", "user:jon"),
+			},
+		},
+		{
+			name:  "malformed_object_4",
+			tuple: tuple.NewTupleKey("github:org-iam#member", "relation", "user:jon"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("invalid 'object' field format"),
+				TupleKey: tuple.NewTupleKey("github:org-iam#member", "relation", "user:jon"),
+			},
+		},
+		{
+			name:  "malformed_object_5",
+			tuple: tuple.NewTupleKey("group:group:group", "relation", "user:jon"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("invalid 'object' field format"),
+				TupleKey: tuple.NewTupleKey("group:group:group", "relation", "user:jon"),
+			},
+		},
+		{
+			name:  "malformed_object_6",
+			tuple: tuple.NewTupleKey(":", "relation", "user:jon"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("invalid 'object' field format"),
+				TupleKey: tuple.NewTupleKey(":", "relation", "user:jon"),
+			},
+		},
+		{
+			name:  "malformed_object_7",
+			tuple: tuple.NewTupleKey("unknown:id", "relation", "user:jon"),
+			model: &openfgav1.AuthorizationModel{
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{Type: "user"},
+					{Type: "document"},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    &tuple.TypeNotFoundError{TypeName: "unknown"},
+				TupleKey: tuple.NewTupleKey("unknown:id", "relation", "user:jon"),
+			},
+		},
+		{
+			name:  "malformed_relation_1",
+			tuple: tuple.NewTupleKey("document:1", "group#group", "user:jon"),
+			model: &openfgav1.AuthorizationModel{
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{Type: "document"},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'relation' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "group#group", "user:jon"),
+			},
+		},
+		{
+			name:  "malformed_relation_2",
+			tuple: tuple.NewTupleKey("document:1", "organization:openfga", "user:jon"),
+			model: &openfgav1.AuthorizationModel{
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{Type: "document"},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'relation' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "organization:openfga", "user:jon"),
+			},
+		},
+		{
+			name:  "malformed_relation_3",
+			tuple: tuple.NewTupleKey("document:1", "my relation", "user:jon"),
+			model: &openfgav1.AuthorizationModel{
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{Type: "document"},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'relation' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "my relation", "user:jon"),
+			},
+		},
+		{
+			name:  "unknown_relation",
+			tuple: tuple.NewTupleKey("document:1", "unknown", "user:jon"),
+			model: &openfgav1.AuthorizationModel{
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{Type: "document"},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("relation 'document#unknown' not found"),
+				TupleKey: tuple.NewTupleKey("document:1", "unknown", "user:jon"),
+			},
+		},
+		{
+			name:  "malformed_user_1",
+			tuple: tuple.NewTupleKey("document:1", "relation", "john:albert:doe"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'user' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "relation", "john:albert:doe"),
+			},
+		},
+		{
+			name:  "malformed_user_2",
+			tuple: tuple.NewTupleKey("document:1", "relation", "john#albert#doe"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'user' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "relation", "john#albert#doe"),
+			},
+		},
+		{
+			name:  "malformed_user_3",
+			tuple: tuple.NewTupleKey("document:1", "relation", "invalid#test:go"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'user' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "relation", "invalid#test:go"),
+			},
+		},
+		{
+			name:  "malformed_user_4",
+			tuple: tuple.NewTupleKey("document:1", "relation", "anne@openfga .com"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'user' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "relation", "anne@openfga .com"),
+			},
+		},
+		{
+			name:  "malformed_user_5",
+			tuple: tuple.NewTupleKey("document:1", "relation", "user:e:eng#member"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'user' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "relation", "user:e:eng#member"),
+			},
+		},
+		{
+			name:  "malformed_user_6",
+			tuple: tuple.NewTupleKey("document:1", "relation", "user:eng#member#member"),
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'user' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "relation", "user:eng#member#member"),
+			},
+		},
+		{
+			name:  "malformed_user_4_(invalid_user_for_1.1_model)",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "anne"), // user must be 'object' or 'object#relation' in 1.1 models
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'user' field must be an object (e.g. document:1) or an 'object#relation' or a typed wildcard (e.g. group:*)"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "anne"),
+			},
+		},
+		{
+			name:  "undefined_user_type_(1.1_model)",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "employee:anne"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    &tuple.TypeNotFoundError{TypeName: "employee"},
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "employee:anne"),
+			},
+		},
+		{
+			name:  "undefined_user_type_in_userset_value_(1.1_model)",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    &tuple.TypeNotFoundError{TypeName: "group"},
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
+			},
+		},
+		{
+			name:  "undefined_userset_relation_in_userset_value_(1.1_model)",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "group",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("relation 'group#member' not found"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
+			},
+		},
+		{
+			name:  "untyped_wildcard_(1.0_model)",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_0,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+					},
+				},
+			},
+		},
+		{
+			name:  "typed_wildcard_with_undefined_object_type",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "employee:*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    &tuple.TypeNotFoundError{TypeName: "employee"},
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "employee:*"),
+			},
+		},
+		{
+			name:  "untyped_wildcard_in_1.1_model",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'user' field must be an object (e.g. document:1) or an 'object#relation' or a typed wildcard (e.g. group:*)"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "*"),
+			},
+		},
+		{
+			name:  "typed_wildcard_with_valid_object_type_in_1.1_model",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "user:*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+										typesystem.WildcardRelationReference("user"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:  "incorrect_user_object_reference_in_tupleset_relation",
+			tuple: tuple.NewTupleKey("document:1", "parent", "someuser"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_0,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"parent": typesystem.This(),
+							"viewer": typesystem.TupleToUserset("parent", "viewer"),
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("unexpected user 'someuser' with tupleset relation 'document#parent'"),
+				TupleKey: tuple.NewTupleKey("document:1", "parent", "someuser"),
+			},
+		},
+		{
+			name:  "untyped_wildcard_value_in_tupleset_relation",
+			tuple: tuple.NewTupleKey("document:1", "parent", "*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_0,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"parent": typesystem.This(),
+							"viewer": typesystem.TupleToUserset("parent", "viewer"),
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("unexpected wildcard relationship with tupleset relation 'document#parent'"),
+				TupleKey: tuple.NewTupleKey("document:1", "parent", "*"),
+			},
+		},
+		{
+			name:  "userset_user_value_in_tupleset_relation",
+			tuple: tuple.NewTupleKey("document:1", "ancestor", "folder:1#parent"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_0,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "folder",
+						Relations: map[string]*openfgav1.Userset{
+							"parent": typesystem.This(),
+						},
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"ancestor": typesystem.This(),
+							"viewer":   typesystem.TupleToUserset("ancestor", "viewer"),
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("unexpected user 'folder:1#parent' with tupleset relation 'document#ancestor'"),
+				TupleKey: tuple.NewTupleKey("document:1", "ancestor", "folder:1#parent"),
+			},
+		},
+		{
+			name:  "typed_wildcard_value_in_tupleset_relation_(1.1_models)",
+			tuple: tuple.NewTupleKey("document:1", "parent", "folder:*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "folder",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"parent": typesystem.This(),
+							"viewer": typesystem.TupleToUserset("parent", "viewer"),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"parent": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "folder"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("unexpected wildcard relationship with tupleset relation 'document#parent'"),
+				TupleKey: tuple.NewTupleKey("document:1", "parent", "folder:*"),
+			},
+		},
+		{
+			name:  "tupleset_relation_involving_rewrite_returns_error",
+			tuple: tuple.NewTupleKey("document:1", "parent", "folder:1"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_0,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "folder",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"parent": typesystem.ComputedUserset("editor"),
+							"editor": typesystem.This(),
+							"viewer": typesystem.TupleToUserset("parent", "viewer"),
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("unexpected rewrite encountered with tupleset relation 'document#parent'"),
+				TupleKey: tuple.NewTupleKey("document:1", "parent", "folder:1"),
+			},
+		},
+		{
+			name:  "typed_wildcard_without_allowed_type_restriction",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "user:*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the typed wildcard 'user:*' is not an allowed type restriction for 'document#viewer'"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "user:*"),
+			},
+		},
+		{
+			name:  "relation_reference_without_allowed_type_restriction",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "group",
+						Relations: map[string]*openfgav1.Userset{
+							"member": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"member": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("'group#member' is not an allowed type restriction for 'document#viewer'"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
+			},
+		},
+		{
+			name:  "type_without_allowed_type_restriction",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "user:jon"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										typesystem.WildcardRelationReference("user"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("type 'user' is not an allowed type restriction for 'document#viewer'"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "user:jon"),
+			},
+		},
+		{
+			name:  "typed_wildcard_in_object_value",
+			tuple: tuple.NewTupleKey("document:*", "viewer", "user:jon"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										typesystem.DirectRelationReference("user", ""),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'object' field cannot reference a typed wildcard"),
+				TupleKey: tuple.NewTupleKey("document:*", "viewer", "user:jon"),
+			},
+		},
+		{
+			name:  "typed_wildcard_in_id_of_userset_value",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "document:*#editor"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"editor": typesystem.This(),
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"editor": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										typesystem.DirectRelationReference("user", ""),
+									},
+								},
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										typesystem.DirectRelationReference("user", ""),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'user' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "document:*#editor"),
+			},
+		},
+		{
+			name:  "typed_wildcard_in_relation_of_userset_value",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "document:2#*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"editor": typesystem.This(),
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"editor": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										typesystem.DirectRelationReference("user", ""),
+									},
+								},
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										typesystem.DirectRelationReference("user", ""),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the 'user' field is malformed"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "document:2#*"),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ts, err := typesystem.New(test.model)
+			require.NoError(t, err)
+			err = ValidateTupleForWrite(ts, test.tuple)
+			if test.expectedError != nil {
+				require.ErrorIs(t, err, test.expectedError)
+				require.Equal(t, err.Error(), test.expectedError.Error())
+			}
+		})
+	}
+}
+
+func TestValidateConditionFacetMismatch(t *testing.T) {
+	// isOk is bound to different facets depending on the model. A conditioned tuple must
+	// only be accepted when the matching restriction's facet (concrete / typed-wildcard /
+	// userset) also matches the tuple's user shape.
+	condCtx, err := structpb.NewStruct(map[string]interface{}{"ok": true})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		model string
+		tuple *openfgav1.TupleKey
+		// errContains is the substring expected in the validation error; "" means the tuple is valid.
+		errContains string
+	}{
+		{
+			name: "wildcard_user_borrows_concrete_facet_condition",
+			// concrete user is conditioned; wildcard is not.
+			model: `model
+  schema 1.1
+type user
+type document
+  relations
+    define b0: [user with isOk, user:*]
+condition isOk(ok: bool) { ok }`,
+			tuple:       tuple.NewTupleKeyWithCondition("document:1", "b0", "user:*", "isOk", condCtx),
+			errContains: "invalid condition for type restriction",
+		},
+		{
+			name: "concrete_user_borrows_wildcard_facet_condition",
+			// wildcard is conditioned; concrete user is not.
+			model: `model
+  schema 1.1
+type user
+type document
+  relations
+    define b0: [user, user:* with isOk]
+condition isOk(ok: bool) { ok }`,
+			tuple:       tuple.NewTupleKeyWithCondition("document:1", "b0", "user:alice", "isOk", condCtx),
+			errContains: "invalid condition for type restriction",
+		},
+		{
+			name: "concrete_user_borrows_userset_facet_condition",
+			// userset facet is conditioned; concrete user is not.
+			model: `model
+  schema 1.1
+type user
+type group
+  relations
+    define member: [user]
+type document
+  relations
+    define b0: [user, group#member with isOk]
+condition isOk(ok: bool) { ok }`,
+			tuple:       tuple.NewTupleKeyWithCondition("document:1", "b0", "user:alice", "isOk", condCtx),
+			errContains: "invalid condition for type restriction",
+		},
+		{
+			name: "userset_user_borrows_concrete_facet_condition",
+			// concrete `group` is conditioned; the userset `group#member` facet is not.
+			model: `model
+  schema 1.1
+type user
+type group
+  relations
+    define member: [user]
+type document
+  relations
+    define b0: [group with isOk, group#member]
+condition isOk(ok: bool) { ok }`,
+			tuple:       tuple.NewTupleKeyWithCondition("document:1", "b0", "group:eng#member", "isOk", condCtx),
+			errContains: "invalid condition for type restriction",
+		},
+		{
+			name: "unconditioned_userset_user_matches_concrete_facet",
+			// the userset `group#member` facet requires isOk; the concrete `group` facet does not.
+			// An unconditioned userset tuple must not borrow the unconditioned concrete facet.
+			model: `model
+  schema 1.1
+type user
+type group
+  relations
+    define member: [user]
+type document
+  relations
+    define b0: [group, group#member with isOk]
+condition isOk(ok: bool) { ok }`,
+			tuple:       tuple.NewTupleKey("document:1", "b0", "group:eng#member"),
+			errContains: "condition is missing",
+		},
+		{
+			name: "userset_relation_mismatch_on_conditioned_userset_facet",
+			// isOk is bound to `group#member`; a `group#admin` tuple must not borrow it.
+			model: `model
+  schema 1.1
+type user
+type group
+  relations
+    define member: [user]
+    define admin: [user]
+type document
+  relations
+    define b0: [group#admin, group#member with isOk]
+condition isOk(ok: bool) { ok }`,
+			tuple:       tuple.NewTupleKeyWithCondition("document:1", "b0", "group:eng#admin", "isOk", condCtx),
+			errContains: "invalid condition for type restriction",
+		},
+		{
+			name: "valid_wildcard_condition_on_wildcard_facet",
+			model: `model
+  schema 1.1
+type user
+type document
+  relations
+    define b0: [user, user:* with isOk]
+condition isOk(ok: bool) { ok }`,
+			tuple:       tuple.NewTupleKeyWithCondition("document:1", "b0", "user:*", "isOk", condCtx),
+			errContains: "",
+		},
+		{
+			name: "valid_concrete_condition_on_concrete_facet",
+			model: `model
+  schema 1.1
+type user
+type document
+  relations
+    define b0: [user with isOk, user:*]
+condition isOk(ok: bool) { ok }`,
+			tuple:       tuple.NewTupleKeyWithCondition("document:1", "b0", "user:alice", "isOk", condCtx),
+			errContains: "",
+		},
+		{
+			name: "valid_userset_condition_on_userset_facet",
+			model: `model
+  schema 1.1
+type user
+type group
+  relations
+    define member: [user]
+type document
+  relations
+    define b0: [user, group#member with isOk]
+condition isOk(ok: bool) { ok }`,
+			tuple:       tuple.NewTupleKeyWithCondition("document:1", "b0", "group:eng#member", "isOk", condCtx),
+			errContains: "",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ts, err := typesystem.New(parser.MustTransformDSLToProto(test.model))
+			require.NoError(t, err)
+			err = ValidateTupleForWrite(ts, test.tuple)
+			if test.errContains != "" {
+				require.ErrorContains(t, err, test.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestRestrictionFacetMatches(t *testing.T) {
+	tests := []struct {
+		name         string
+		restriction  *openfgav1.RelationReference
+		user         string
+		userRelation string
+		expected     bool
+	}{
+		{
+			name:        "concrete_restriction_matches_concrete_user",
+			restriction: typesystem.DirectRelationReference("user", ""),
+			user:        "user:alice",
+			expected:    true,
+		},
+		{
+			name:        "concrete_restriction_rejects_wildcard_user",
+			restriction: typesystem.DirectRelationReference("user", ""),
+			user:        "user:*",
+			expected:    false,
+		},
+		{
+			name:         "concrete_restriction_rejects_userset_user",
+			restriction:  typesystem.DirectRelationReference("group", ""),
+			user:         "group:eng#member",
+			userRelation: "member",
+			expected:     false,
+		},
+		{
+			name:        "wildcard_restriction_matches_wildcard_user",
+			restriction: typesystem.WildcardRelationReference("user"),
+			user:        "user:*",
+			expected:    true,
+		},
+		{
+			name:        "wildcard_restriction_rejects_concrete_user",
+			restriction: typesystem.WildcardRelationReference("user"),
+			user:        "user:alice",
+			expected:    false,
+		},
+		{
+			name:         "userset_restriction_matches_same_relation",
+			restriction:  typesystem.DirectRelationReference("group", "member"),
+			user:         "group:eng#member",
+			userRelation: "member",
+			expected:     true,
+		},
+		{
+			name:         "userset_restriction_rejects_different_relation",
+			restriction:  typesystem.DirectRelationReference("group", "member"),
+			user:         "group:eng#admin",
+			userRelation: "admin",
+			expected:     false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.expected, restrictionFacetMatches(test.restriction, test.user, test.userRelation))
+		})
+	}
+}
+
+func TestValidateTupleForRead(t *testing.T) {
+	tests := []struct {
+		name          string
+		tuple         *openfgav1.TupleKey
+		model         *openfgav1.AuthorizationModel
+		expectedError error
+	}{
+		{
+			name:  "untyped_wildcard_(1.0_model)",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_0,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+					},
+				},
+			},
+		},
+		{
+			name:  "typed_wildcard_with_undefined_object_type",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "employee:*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the typed wildcard 'employee:*' is not an allowed type restriction for 'document#viewer'"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "employee:*"),
+			},
+		},
+		{
+			name:  "typed_wildcard_with_valid_object_type_in_1.1_model",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "user:*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+										typesystem.WildcardRelationReference("user"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:  "incorrect_user_object_reference_in_tupleset_relation",
+			tuple: tuple.NewTupleKey("document:1", "parent", "someuser"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_0,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"parent": typesystem.This(),
+							"viewer": typesystem.TupleToUserset("parent", "viewer"),
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("unexpected user 'someuser' with tupleset relation 'document#parent'"),
+				TupleKey: tuple.NewTupleKey("document:1", "parent", "someuser"),
+			},
+		},
+		{
+			name:  "untyped_wildcard_value_in_tupleset_relation",
+			tuple: tuple.NewTupleKey("document:1", "parent", "*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_0,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"parent": typesystem.This(),
+							"viewer": typesystem.TupleToUserset("parent", "viewer"),
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("unexpected wildcard relationship with tupleset relation 'document#parent'"),
+				TupleKey: tuple.NewTupleKey("document:1", "parent", "*"),
+			},
+		},
+		{
+			name:  "userset_user_value_in_tupleset_relation",
+			tuple: tuple.NewTupleKey("document:1", "ancestor", "folder:1#parent"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_0,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "folder",
+						Relations: map[string]*openfgav1.Userset{
+							"parent": typesystem.This(),
+						},
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"ancestor": typesystem.This(),
+							"viewer":   typesystem.TupleToUserset("ancestor", "viewer"),
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("unexpected user 'folder:1#parent' with tupleset relation 'document#ancestor'"),
+				TupleKey: tuple.NewTupleKey("document:1", "ancestor", "folder:1#parent"),
+			},
+		},
+		{
+			name:  "typed_wildcard_value_in_tupleset_relation_(1.1_models)",
+			tuple: tuple.NewTupleKey("document:1", "parent", "folder:*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "folder",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"parent": typesystem.This(),
+							"viewer": typesystem.TupleToUserset("parent", "viewer"),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"parent": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "folder"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("unexpected wildcard relationship with tupleset relation 'document#parent'"),
+				TupleKey: tuple.NewTupleKey("document:1", "parent", "folder:*"),
+			},
+		},
+		{
+			name:  "tupleset_relation_involving_rewrite_returns_error",
+			tuple: tuple.NewTupleKey("document:1", "parent", "folder:1"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_0,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "folder",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"parent": typesystem.ComputedUserset("editor"),
+							"editor": typesystem.This(),
+							"viewer": typesystem.TupleToUserset("parent", "viewer"),
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("unexpected rewrite encountered with tupleset relation 'document#parent'"),
+				TupleKey: tuple.NewTupleKey("document:1", "parent", "folder:1"),
+			},
+		},
+		{
+			name:  "typed_wildcard_without_allowed_type_restriction",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "user:*"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("the typed wildcard 'user:*' is not an allowed type restriction for 'document#viewer'"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "user:*"),
+			},
+		},
+		{
+			name:  "relation_reference_without_allowed_type_restriction",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "group",
+						Relations: map[string]*openfgav1.Userset{
+							"member": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"member": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										{Type: "user"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("'group#member' is not an allowed type restriction for 'document#viewer'"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
+			},
+		},
+		{
+			name:  "type_without_allowed_type_restriction",
+			tuple: tuple.NewTupleKey("document:1", "viewer", "user:jon"),
+			model: &openfgav1.AuthorizationModel{
+				SchemaVersion: typesystem.SchemaVersion1_1,
+				TypeDefinitions: []*openfgav1.TypeDefinition{
+					{
+						Type: "user",
+					},
+					{
+						Type: "document",
+						Relations: map[string]*openfgav1.Userset{
+							"viewer": typesystem.This(),
+						},
+						Metadata: &openfgav1.Metadata{
+							Relations: map[string]*openfgav1.RelationMetadata{
+								"viewer": {
+									DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+										typesystem.WildcardRelationReference("user"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: &tuple.InvalidTupleError{
+				Cause:    fmt.Errorf("type 'user' is not an allowed type restriction for 'document#viewer'"),
+				TupleKey: tuple.NewTupleKey("document:1", "viewer", "user:jon"),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ts, err := typesystem.New(test.model)
+			require.NoError(t, err)
+			err = ValidateTupleForRead(ts, test.tuple)
+			if test.expectedError != nil {
+				require.ErrorIs(t, err, test.expectedError)
+				require.Equal(t, err.Error(), test.expectedError.Error())
+			}
+		})
+	}
+}
+
+func BenchmarkValidateTupleForWrite(b *testing.B) {
+	model := &openfgav1.AuthorizationModel{
+		SchemaVersion: typesystem.SchemaVersion1_1,
+		TypeDefinitions: []*openfgav1.TypeDefinition{
+			{
+				Type: "user",
+			},
+			{
+				Type: "folder",
+				Relations: map[string]*openfgav1.Userset{
+					"viewer": typesystem.This(),
+				},
+				Metadata: &openfgav1.Metadata{
+					Relations: map[string]*openfgav1.RelationMetadata{
+						"viewer": {
+							DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+								{Type: "user"},
+							},
+						},
+					},
+				},
+			},
+			{
+				Type: "document",
+				Relations: map[string]*openfgav1.Userset{
+					"parent": typesystem.This(),
+					"viewer": typesystem.TupleToUserset("parent", "viewer"),
+				},
+				Metadata: &openfgav1.Metadata{
+					Relations: map[string]*openfgav1.RelationMetadata{
+						"parent": {
+							DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+								{Type: "folder"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ts, err := typesystem.New(model)
+	require.NoError(b, err)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := ValidateTupleForWrite(ts, tuple.NewTupleKey("folder:x", "viewer", fmt.Sprintf("user:%v", i)))
+		require.NoError(b, err)
+	}
+}
+
+func TestValidateStruct(t *testing.T) {
+	tests := []struct {
+		name    string
+		context map[string]interface{}
+		wantErr bool
+	}{
+		{
+			name:    "nil_context",
+			context: nil,
+			wantErr: false,
+		},
+		{
+			name:    "clean_context",
+			context: map[string]interface{}{"key": "value"},
+			wantErr: false,
+		},
+		{
+			name:    "control_char_in_key",
+			context: map[string]interface{}{"key\x00bad": "value"},
+			wantErr: true,
+		},
+		{
+			name:    "control_char_in_string_value",
+			context: map[string]interface{}{"key": "value\x01bad"},
+			wantErr: true,
+		},
+		{
+			name: "control_char_in_nested_struct_key",
+			context: map[string]interface{}{
+				"nested": map[string]interface{}{"inner\x02key": "value"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "control_char_in_list_value",
+			context: map[string]interface{}{
+				"items": []interface{}{"good", "bad\x03item"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "clean_nested_struct",
+			context: map[string]interface{}{
+				"nested": map[string]interface{}{"innerKey": "innerValue"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "number_and_bool_values_pass",
+			context: map[string]interface{}{
+				"count":  42.0,
+				"active": true,
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			newStruct := testutils.MustNewStruct(t, tc.context)
+			err := ValidateStruct(newStruct)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "characters")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func BenchmarkValidateTupleForRead(b *testing.B) {
+	model := &openfgav1.AuthorizationModel{
+		SchemaVersion: typesystem.SchemaVersion1_1,
+		TypeDefinitions: []*openfgav1.TypeDefinition{
+			{
+				Type: "user",
+			},
+			{
+				Type: "folder",
+				Relations: map[string]*openfgav1.Userset{
+					"viewer": typesystem.This(),
+				},
+				Metadata: &openfgav1.Metadata{
+					Relations: map[string]*openfgav1.RelationMetadata{
+						"viewer": {
+							DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+								{Type: "user"},
+							},
+						},
+					},
+				},
+			},
+			{
+				Type: "document",
+				Relations: map[string]*openfgav1.Userset{
+					"parent": typesystem.This(),
+					"viewer": typesystem.TupleToUserset("parent", "viewer"),
+				},
+				Metadata: &openfgav1.Metadata{
+					Relations: map[string]*openfgav1.RelationMetadata{
+						"parent": {
+							DirectlyRelatedUserTypes: []*openfgav1.RelationReference{
+								{Type: "folder"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ts, err := typesystem.New(model)
+	require.NoError(b, err)
+	t := tuple.NewTupleKey("folder:x", "viewer", "user:1")
+
+	for b.Loop() {
+		err := ValidateTupleForRead(ts, t)
+		require.NoError(b, err)
+	}
+}
+
+func TestValidateInlineExpressionCondition(t *testing.T) {
+	const model = `model
+  schema 1.1
+type user
+type document
+  relations
+    define editor: [user with $expression]
+    define viewer: [user] or editor`
+
+	ts, err := typesystem.NewAndValidate(t.Context(), parser.MustTransformDSLToProto(model))
+	require.NoError(t, err)
+
+	makeCtx := func(ctx map[string]interface{}) *structpb.Struct {
+		s, e := structpb.NewStruct(ctx)
+		require.NoError(t, e)
+		return s
+	}
+
+	tests := []struct {
+		name        string
+		tuple       *openfgav1.TupleKey
+		expectedErr string
+	}{
+		{
+			name: "valid_with_declared_param",
+			tuple: tuple.NewTupleKeyWithCondition("document:1", "editor", "user:alice",
+				"$expression",
+				makeCtx(map[string]interface{}{
+					"expression": "channel_id == 'X123456'",
+					"parameters": map[string]interface{}{"channel_id": "string"},
+				}),
+			),
+		},
+		{
+			name: "valid_with_inferred_string_param",
+			tuple: tuple.NewTupleKeyWithCondition("document:1", "editor", "user:alice",
+				"$expression",
+				makeCtx(map[string]interface{}{
+					"expression": "channel_id == 'X123456'",
+				}),
+			),
+		},
+		{
+			name: "missing_expression_field",
+			tuple: tuple.NewTupleKeyWithCondition("document:1", "editor", "user:alice",
+				"$expression",
+				makeCtx(map[string]interface{}{}),
+			),
+			expectedErr: "Invalid tuple",
+		},
+		{
+			name: "invalid_cel_syntax",
+			tuple: tuple.NewTupleKeyWithCondition("document:1", "editor", "user:alice",
+				"$expression",
+				makeCtx(map[string]interface{}{
+					"expression": "channel_id ==",
+				}),
+			),
+			expectedErr: "Invalid tuple",
+		},
+		{
+			name: "unknown_parameter_type",
+			tuple: tuple.NewTupleKeyWithCondition("document:1", "editor", "user:alice",
+				"$expression",
+				makeCtx(map[string]interface{}{
+					"expression": "x == 1",
+					"parameters": map[string]interface{}{"x": "bigdecimal"},
+				}),
+			),
+			expectedErr: "Invalid tuple",
+		},
+		{
+			name: "wrong_relation_no_expression_restriction",
+			// viewer does not have $expression in its type restrictions
+			tuple: tuple.NewTupleKeyWithCondition("document:1", "viewer", "user:alice",
+				"$expression",
+				makeCtx(map[string]interface{}{
+					"expression": "x == 'y'",
+				}),
+			),
+			expectedErr: "Invalid tuple",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateTupleForWrite(ts, tt.tuple)
+			if tt.expectedErr != "" {
+				require.Error(t, err)
+				require.ErrorContains(t, err, tt.expectedErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
