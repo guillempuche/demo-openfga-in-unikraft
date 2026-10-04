@@ -11,7 +11,9 @@ rootfs:
   source: ./Dockerfile
   format: erofs
 
-cmd: ["/usr/local/bin/wrapper.sh", "postgres", "-c", "shared_preload_libraries=pg_ukc_scaletozero"]
+# max_wal_size: the default (1GB) is larger than the 512MiB data volume that
+# scripts/deploy.sh attaches, so WAL could fill it before a checkpoint.
+cmd: ["/usr/local/bin/wrapper.sh", "postgres", "-c", "shared_preload_libraries=pg_ukc_scaletozero", "-c", "max_wal_size=128MB"]
 
 # Vendored from github.com/unikraft-cloud/examples/tree/main/postgres
 # (PostgreSQL 16.4, patched to run as root). Runtime settings (private, volume,
