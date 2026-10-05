@@ -14,6 +14,7 @@ Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grain
 | Exposure | No service on OpenFGA or Postgres; ports 8080/8081/3000/2112/5432 don't answer; no key → `401` |
 | Redeploy (delete + run, 32 s) | Every private IP changed and was reused by another instance; `.internal` names kept working with no config change |
 | `fga model test` against the deployed server (v1.21.0, fresh store) | 28/28 tests: 190 checks, 11 ListObjects, 16 ListUsers |
+| OpenFGA API | All 19 core RPCs called and asserted on Unikraft (server metrics as proof); +6 AuthZEN RPCs on the experimental local/CI stack |
 | Memory | OpenFGA 17.6 MiB RSS, API 26 MiB RSS (512 MiB allocated each) |
 
 ## Contents
@@ -24,6 +25,7 @@ Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grain
 - [Patterns to copy](#patterns-to-copy)
 - [Gotchas](#gotchas)
 - [Authorization models](#authorization-models)
+- [Integration tests: every OpenFGA RPC](#integration-tests-every-openfga-rpc)
 - [Repository layout](#repository-layout)
 - [Development](#development)
 - [Reference](#reference)
@@ -175,10 +177,13 @@ unikraft instances get demo-fga-openfga -f name,state,networks,service
 `unikraft instances tunnel` forwards a local port to an unexposed instance through a temporary relay instance:
 
 ```bash
-./scripts/tunnel.sh           # terminal 1: localhost:18080 -> demo-fga-openfga:8080
-./scripts/seed.sh             # terminal 2: create store "demo-fga", write model + synthetic tuples
-./scripts/test-remote.sh      # fga model test against the deployed server, on a fresh store
+./scripts/tunnel.sh                   # terminal 1: localhost:18080 -> 8080 (HTTP), 18081 -> 8081 (gRPC), 12112 -> 2112 (metrics)
+./scripts/seed.sh                     # terminal 2: create store "demo-fga", write model + synthetic tuples
+./scripts/test-remote.sh              # fga model test against the deployed server, on a fresh store
+./scripts/test-integration-remote.sh  # every OpenFGA RPC against the deployed server (see Integration tests)
 ```
+
+Stop `tunnel.sh` with Ctrl-C: it closes all three tunnels with one signal each, which removes their relay instances.
 
 ### Verify
 
@@ -270,6 +275,22 @@ If any grant reachable from the query has a condition and the request doesn't pa
 
 `--tests` takes one path or glob: `fga model test --tests 'authz/models/*.fga.yaml'`.
 
+### `OpenFgaClient.writeAssertions` drops contextual tuples and context
+
+In `@openfga/sdk` 0.9.7 the client sends only the tuple key and expectation. Use `OpenFgaApi.writeAssertions` (the raw API) to store assertions with `contextual_tuples` or `context`; [`assertions.test.ts`](tests/integration/assertions.test.ts) fails when the SDK starts sending them.
+
+### Deep recursion fails at 25 levels, unless the cache already knows the answer
+
+`viewer from parent` over a chain of folders resolves 24 levels and returns `authorization_model_resolution_too_complex` at 25 (the resolve node limit) on a cold cache, but succeeds deeper once shallower answers are cached. `ListObjects` isn't limited the same way. Don't rely on the cache to rescue deep hierarchies.
+
+### `ReadChanges` `start_time` must come from the server's clock
+
+The server rejects a `start_time` in the future and compares it with its own timestamps. A client clock that's off (it was through the tunnel) silently returns the wrong window; take the cutoff from a change's `timestamp`.
+
+### `ListUsers` also fails when a condition is missing context
+
+Like `ListObjects`, it returns `missing context parameters` instead of a shorter list.
+
 ### A deleted OpenFGA store still answers checks
 
 OpenFGA soft-deletes stores, so a cached store ID keeps returning answers from the old store. The API re-resolves the store every 30 s and immediately when OpenFGA reports it has no model.
@@ -278,9 +299,13 @@ OpenFGA soft-deletes stores, so a cached store ID keeps returning answers from t
 
 Each run creates a new service with a random FQDN. For a stable name, create the service once with `unikraft services create` and attach instances with `--service`.
 
+### Three targets in one `unikraft instances tunnel` fail
+
+With CLI 0.5.2 the third target answers "internal tunnel error"; `scripts/tunnel.sh` runs one tunnel process per port. Under parallel load the relay also resets connections (`ECONNRESET`), so the integration suite runs its files one at a time.
+
 ### Tunnels create publicly addressable relay instances
 
-`unikraft instances tunnel` starts a `utils/tunnel` instance (128 MiB, random `inst-*` name) that counts against your quota and has its own public FQDN while the tunnel is open. Plain HTTPS to that FQDN returns "Service not found", not your service; the tunnel traffic itself uses the CLI's relay protocol, whose authentication this demo didn't examine. The relay is removed when the tunnel closes, so close tunnels when you're done; `scripts/verify.sh` fails while one is open.
+`unikraft instances tunnel` starts a `utils/tunnel` instance (128 MiB, random `inst-*` name) that counts against your quota and has its own public FQDN while the tunnel is open. Plain HTTPS to that FQDN returns "Service not found", not your service; the tunnel traffic itself uses the CLI's relay protocol, whose authentication this demo didn't examine. The relay is removed when the tunnel process gets one SIGTERM or Ctrl-C; a second signal during that cleanup leaves the relay running (it happened here: delete leftovers by name, image `utils/tunnel`). Close tunnels when you're done; `scripts/verify.sh` fails while a relay is public.
 
 ## Authorization models
 
@@ -329,10 +354,34 @@ To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<n
 - `api/` – public demo API (Node.js 24, TypeScript run natively), its tests, Kraftfile and Dockerfile.
 - `infrastructure/unikraft/openfga/` – OpenFGA Kraftfile and Dockerfile (static Go build).
 - `infrastructure/unikraft/postgres/` – PostgreSQL Kraftfile and rootfs, from the [Unikraft examples](https://github.com/unikraft-cloud/examples/tree/main/postgres) (see [NOTICE](NOTICE)).
-- `scripts/` – `unikraft` CLI wrappers: build, deploy, tunnel, seed, test-remote, verify, cleanup.
+- `scripts/` – `unikraft` CLI wrappers (build, deploy, tunnel, seed, test-remote, test-integration-remote, verify, cleanup) and the coverage gates.
+- `tests/integration/` – OpenFGA integration suite (`@openfga/sdk`, `node:test`) and its throwaway compose stack.
 - `versions.env` – pinned OpenFGA and fga CLI versions; `scripts/check-versions.sh` (in CI) checks every other pin against it.
 - `docs/RESULTS.md` – measured results on Unikraft Cloud. `docs/1-*.md` and `docs/2-*.md` are historical notes from the legacy `kraft cloud` setup.
 - `AGENTS.md` – context for AI coding agents.
+
+## Integration tests: every OpenFGA RPC
+
+[`tests/integration/`](tests/integration/) uses the official [`@openfga/sdk`](https://github.com/openfga/js-sdk) against a real OpenFGA (stored tuples in PostgreSQL, not contextual tuples) and covers every RPC in the API definition:
+
+| Area | RPCs | Also covered |
+| --- | --- | --- |
+| Stores | CreateStore, GetStore, ListStores, DeleteStore, UpdateStore (not implemented: asserts `Unimplemented` over gRPC) | name filter, pagination, deleted stores |
+| Models | WriteAuthorizationModel, ReadAuthorizationModel, ReadAuthorizationModels | invalid models, newest-first paging |
+| Tuples | Write, Read, ReadChanges | conditions, duplicate/missing handling, 100-tuple limit, partial keys, type filter, `start_time` |
+| Queries | Check, BatchCheck, Expand, ListObjects, StreamedListObjects, ListUsers | contextual tuples, context, consistency modes with the check cache on, model pinning, 50-check and 100-contextual-tuple limits, recursion limit, missing-context errors |
+| Assertions | WriteAssertions, ReadAssertions | contextual tuples and context |
+| Security | — | HTTP and gRPC without a key or with a wrong key, health and metrics without a key |
+| Regressions | — | fixed advisories: conditions with the check cache, duplicate BatchCheck items, conditions on the wrong grant type, ListUsers with `user:*` + `and` + `but not` (CVE-2026-61709) |
+| Experimental (local/CI only) | AuthZEN: Evaluation, Evaluations, SubjectSearch, ResourceSearch, ActionSearch, GetConfiguration | inline `$expression` conditions |
+
+```bash
+docker compose -f tests/integration/docker-compose.yaml up -d --wait   # OpenFGA v1.21.0 + PostgreSQL 16, experimental tier on
+(cd tests/integration && npm ci)
+python3 scripts/check-api-coverage.py                                  # runs the suite + the API coverage gate
+```
+
+`scripts/check-api-coverage.py` fails unless every RPC has a passing `[rpc:<Name>]` test **and** shows up in OpenFGA's own `grpc_server_handled_total` metric during that run (scraped before and after), with code `OK`, or `Unimplemented` for UpdateStore. On Unikraft, `./scripts/test-integration-remote.sh` runs the same gate through the tunnel; the deployment doesn't enable experimental features, so AuthZEN is reported as excluded.
 
 ## Development
 
@@ -340,9 +389,10 @@ To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<n
 fga model test --tests 'authz/models/*.fga.yaml'
 python3 scripts/check-model-coverage.py
 cd api && npm ci && npm run typecheck && npm test
+python3 scripts/check-api-coverage.py   # needs the tests/integration compose stack
 ```
 
-CI runs these, plus `shellcheck` on the scripts, a Compose config check and a build of the API rootfs.
+CI runs these, plus `shellcheck` on the scripts, the version check, a Compose config check and a build of the API rootfs.
 
 ## Reference
 

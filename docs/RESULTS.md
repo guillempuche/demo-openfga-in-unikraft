@@ -167,6 +167,23 @@ The model grew to org → team → folder → project → list → task (41 rela
 | Unikraft Cloud (v1.21.0) through the tunnel, fresh store | same |
 | `verify.sh` after re-seeding `demo-fga` with the new model | all checks passed; `/bench` p50 1.107–1.368 ms |
 
+## Integration suite and API coverage (2026-10-05)
+
+`tests/integration/` (`@openfga/sdk` 0.9.7, `node:test`) calls every RPC in the API definition with stored tuples; `scripts/check-api-coverage.py` requires a passing `[rpc:X]` test and the server's own `grpc_server_handled_total` growing for each RPC during the run.
+
+| Run | Tests | RPCs proven |
+| --- | --- | --- |
+| Local/CI stack (v1.21.0, PostgreSQL 16, experimental tier on) | 58/58, 2.4 s | 25/25 (19 core incl. UpdateStore = `Unimplemented`, 6 AuthZEN) |
+| Unikraft Cloud through the tunnel (experimental tier off) | 51/51, 53 s | 19/19 core; AuthZEN excluded |
+
+Things the suite surfaced:
+
+- `OpenFgaClient.writeAssertions` (SDK 0.9.7) drops contextual tuples and context; the raw `OpenFgaApi` keeps them.
+- The recursion limit is 25 levels on a cold cache (24 resolve) but cached answers let deeper checks succeed; `ListObjects` isn't limited the same way.
+- `ListUsers`, like `ListObjects`, errors when a reachable condition is missing context.
+- `ReadChanges` compares `start_time` with the server's clock; the tunnel exposed client/server clock skew.
+- Over the tunnel: three targets in one `unikraft instances tunnel` fail; parallel load causes `ECONNRESET`, so files run serially (51/51 in 3 consecutive runs). Killing a tunnel with two signals left three relays running and public; they were deleted, and `tunnel.sh` now stops each tunnel with exactly one SIGTERM (relays gone in ~2 s).
+
 ## Build notes
 
 - Building OpenFGA from its Kraftfile failed with `dockerfile context does not exist` until the `rootfs` path was fixed.

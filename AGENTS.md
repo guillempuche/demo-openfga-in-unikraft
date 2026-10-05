@@ -37,7 +37,8 @@ authz/models/               fga.mod + modules (core, conditions, projects, tasks
 authz/seed/tuples.yaml      synthetic tuples for the demo store
 api/                        server.ts, server.test.ts, Kraftfile, Dockerfile
 infrastructure/unikraft/    openfga/ and postgres/ Kraftfiles and Dockerfiles
-scripts/                    env.sh (shared), build, deploy, tunnel, seed, test-remote, verify, cleanup, sync-agent-skills
+scripts/                    env.sh (shared), build, deploy, tunnel, seed, test-remote, test-integration-remote, verify, cleanup, sync-agent-skills, check-* gates
+tests/integration/          OpenFGA integration suite (@openfga/sdk + node:test), its compose stack (ports 28080/28081/22112)
 .agents/skills/             agent skills (unikraft, git-commit-messages, write-comments); .claude/skills/ symlinks the repo ones
 docs/RESULTS.md             measured results; docs/1-*, docs/2-* are historical (legacy CLI)
 docs/repos/                 read-only git subtree copies of OpenFGA repos (server, api, js-sdk, cli, language, sample-stores); see docs/repos/README.md
@@ -64,7 +65,11 @@ python3 scripts/check-model-coverage.py          # every relation true+false, ev
 cd api && npm ci && npm run typecheck && npm test   # node:test against a stub OpenFGA
 bash -n scripts/*.sh scripts/env.sh
 ./scripts/check-versions.sh
+docker compose -f tests/integration/docker-compose.yaml up -d --wait && (cd tests/integration && npm ci)
+python3 scripts/check-api-coverage.py              # integration suite + every RPC tested and seen in server metrics
 ```
+
+Integration tests are named `[rpc:<Name>] ...` (the API gate counts them) and use a fresh store per file (`freshStore` in `tests/integration/helpers.ts`); never test against the seeded `demo-fga` store. They need `fga` and `grpcurl` on PATH.
 
 `fga model test --tests` takes one path or glob. Listing two files silently tests only the first.
 
@@ -73,9 +78,10 @@ bash -n scripts/*.sh scripts/env.sh
 ```bash
 ./scripts/build.sh            # build each image to a local OCI archive, then `unikraft images copy` it
 ./scripts/deploy.sh           # postgres → migrate → openfga → api
-./scripts/tunnel.sh           # foreground; run it in the background or another terminal
+./scripts/tunnel.sh           # foreground; 3 tunnels (HTTP 18080, gRPC 18081, metrics 12112); stop with Ctrl-C/one SIGTERM
 ./scripts/seed.sh             # needs the tunnel
-./scripts/test-remote.sh      # fga model test against the deployed store (needs the tunnel)
+./scripts/test-remote.sh      # fga model test against the deployed server on a fresh store (needs the tunnel)
+./scripts/test-integration-remote.sh  # integration suite + API gate on the deployment (needs the tunnel)
 ./scripts/verify.sh           # public API + exposure checks; non-zero exit on failure
 ./scripts/cleanup.sh          # delete demo-fga-* instances (keeps volume and images)
 ```
@@ -85,7 +91,7 @@ Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. 
 ## Guardrails
 
 - **Use the scripts.** They pin every `unikraft` call to `UNIKRAFT_PROFILE`. For a raw command, set the profile first: `export UNIKRAFT_PROFILE=<profile from .env>`. The account may host other workloads.
-- **Touch only `demo-fga-*`** instances, volumes and images. Tunnel relays are named `inst-*` (image `utils/tunnel`); close the tunnel instead of deleting them by name.
+- **Touch only `demo-fga-*`** instances, volumes and images. Tunnel relays are named `inst-*` (image `utils/tunnel`); close the tunnel with one signal (a second one orphans the relay, which stays publicly addressable). Delete a relay by name only if its tunnel process is gone, after checking its image is `utils/tunnel`.
 - **Never print secrets.** `unikraft instances get`, `wait`, `delete` and `list -o json|yaml` include `runtime.env` (passwords, keys) unless you pass `-f <fields>` or `-o quiet`. `unikraft run --dry-run` also prints env values. Pipe `unikraft instances logs` through the `redact` function in `scripts/env.sh`. Don't `cat .env`, run `env`/`printenv`, or use `set -x`.
 - **Keep secrets off argv.** `unikraft run -e` only takes `KEY=VALUE`; `scripts/deploy.sh` writes a 0600 YAML spec and uses `--load` instead. `yq_str` quotes values through stdin.
 - **Ask before data loss.** `cleanup.sh --volume` or `--all` deletes the Postgres volume (store, model and tuples).
