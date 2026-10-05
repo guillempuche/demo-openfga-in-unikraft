@@ -55,6 +55,35 @@ jobs:
       - run: shellcheck -x -S warning scripts/*.sh scripts/env.sh
       - run: docker compose -f authz/docker-compose.yaml --env-file authz/.env.example config --quiet
 
+  integration:
+    name: OpenFGA integration suite and API coverage
+    runs-on: ubuntu-latest
+    env:
+      FGA_VERSION: 0.8.1 # keep in sync with versions.env
+      GRPCURL_VERSION: 1.9.4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tests/integration/package-lock.json
+      - name: Install fga CLI and grpcurl
+        run: |
+          curl -fsSL "https://github.com/openfga/cli/releases/download/v${FGA_VERSION}/fga_${FGA_VERSION}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin fga
+          curl -fsSL "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz" | tar -xz -C /usr/local/bin grpcurl
+      - name: Start OpenFGA (v1.21.0, PostgreSQL 16, experimental tier on)
+        run: docker compose -f tests/integration/docker-compose.yaml up -d --wait
+      - run: npm ci
+        working-directory: tests/integration
+      - run: npm run typecheck
+        working-directory: tests/integration
+      # Runs the suite; every RPC needs a passing [rpc:X] test and must show up
+      # in OpenFGA's own per-method metrics during the run.
+      - run: python3 scripts/check-api-coverage.py
+      - if: failure()
+        run: docker compose -f tests/integration/docker-compose.yaml logs openfga | tail -100
+
   api-image:
     name: API rootfs builds
     runs-on: ubuntu-latest
