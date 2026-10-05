@@ -8,9 +8,14 @@ type folder
     # feature: recursion (tuple-to-userset over the same type)
     define parent: [folder]
     define owner: [user, team#member]
+    # Owners of a folder, or of any folder above it, manage the projects inside.
+    define manager: owner or manager from parent
     define editor: [user, team#member] or owner or editor from parent
     # feature: conditions on usersets — a team can get temporary read access.
     define viewer: [user, team#member, team#member with non_expired_grant] or editor or viewer from parent
+    # Blocked in the org of this folder or of any folder above it; projects
+    # inside inherit the block even when they have no org of their own.
+    define blocked_in_org: blocked from org or blocked_in_org from parent
 
 type project
   relations
@@ -24,12 +29,13 @@ type project
     define viewer: [user, team#member, user:*, user:* with non_expired_grant]
     define blocked: [user]
     define member: owner or contributor or viewer
-    define can_manage: owner or admin from org
-    # feature: exclusion (but not) with grouping — blocked on the project or
-    # in the org wins over every grant.
-    # (owners are covered by can_manage)
-    define can_edit: (contributor or editor from folder or can_manage) but not (blocked or blocked from org)
-    define can_view: (member or viewer from folder or can_manage) but not (blocked or blocked from org)
+    define can_manage: owner or admin from org or manager from folder
+    # feature: exclusion (but not) — a block on the project, in its org, or in
+    # the org of its folder wins over every grant, here and on its lists and
+    # tasks. can_manage isn't excluded, so a blocked manager can still unblock.
+    define is_blocked: blocked or blocked from org or blocked_in_org from folder
+    define can_edit: (contributor or editor from folder or can_manage) but not is_blocked
+    define can_view: (member or viewer from folder or can_manage) but not is_blocked
     # feature: intersection (and) — sharing needs edit rights and org membership.
     define can_share: can_edit and member from org
 
@@ -39,9 +45,11 @@ type list
     define owner: [user]
     define collaborator: [user]
     define viewer: [user]
-    # Inherit through the project's permissions (can_*), not its raw roles, so
-    # a user blocked on the project is blocked on its lists too.
+    # Inherit through the project's permissions (can_*), not its raw roles, and
+    # exclude the project's block from direct list grants too: a user blocked
+    # on the project, or in its org, loses every list in it.
     define member: owner or collaborator or viewer
-    define can_edit: owner or collaborator or can_edit from project
-    define can_view: member or can_view from project
-    define can_share: owner or collaborator or can_share from project
+    define is_blocked: is_blocked from project
+    define can_edit: (owner or collaborator or can_edit from project) but not is_blocked
+    define can_view: (member or can_view from project) but not is_blocked
+    define can_share: (owner or collaborator or can_share from project) but not is_blocked

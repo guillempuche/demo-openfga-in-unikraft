@@ -3,73 +3,139 @@ name: Tasks — task roles and project permissions added by the tasks module
 
 model_file: ./fga.mod
 
+# GIVEN (every test) project:roadmap: alice owns it, frank contributes, carol
+# views. list:backlog belongs to it (erin collaborates on the list, lou views
+# it) and task:spec to the list: tom owns the task, bob is assigned and gina
+# follows it.
 tuples:
   - { user: user:alice, relation: owner, object: project:roadmap }
   - { user: user:frank, relation: contributor, object: project:roadmap }
   - { user: user:carol, relation: viewer, object: project:roadmap }
   - { user: project:roadmap, relation: project, object: list:backlog }
+  - { user: user:erin, relation: collaborator, object: list:backlog }
+  - { user: user:lou, relation: viewer, object: list:backlog }
   - { user: list:backlog, relation: list, object: task:spec }
   - { user: user:tom, relation: owner, object: task:spec }
   - { user: user:bob, relation: assignee, object: task:spec }
   - { user: user:gina, relation: follower, object: task:spec }
 
 tests:
-  - name: Task owner has full control
+  # --- task roles ----------------------------------------------------------------
+
+  - name: a task owner should have full control of the task
+    # WHEN  checking tom, the task's owner
+    # THEN  he can view, edit, complete and comment
     check:
       - user: user:tom
         object: task:spec
         assertions: { owner: true, assignee: false, can_view: true, can_edit: true, can_complete: true, can_comment: true }
-      # alice owns the project, not the task: she edits through the list.
-      - user: user:alice
-        object: task:spec
-        assertions: { owner: false, can_edit: true, can_complete: false }
 
-  - name: Assignee completes, follower reads and comments
+  - name: an assignee should edit, complete and comment on the task
+    # WHEN  checking bob, the assignee
+    # THEN  he can do everything a task owner can
     check:
       - user: user:bob
         object: task:spec
         assertions: { assignee: true, follower: false, can_view: true, can_comment: true, can_complete: true, can_edit: true }
+
+  - name: a follower should read and comment on the task only
+    # WHEN  checking gina, a follower
+    # THEN  she can view and comment, not edit or complete
+    check:
       - user: user:gina
         object: task:spec
         assertions: { follower: true, can_view: true, can_comment: true, can_edit: false, can_complete: false }
 
-  - name: Project contributors edit tasks through the list, viewers only read
+  - name: a task should point at its list only
+    # WHEN  checking task:spec's list
+    # THEN  it is list:backlog, not another list
     check:
-      - user: user:frank
-        object: task:spec
-        assertions: { owner: false, can_view: true, can_edit: true, can_complete: false, can_comment: true }
-      - user: user:carol
-        object: task:spec
-        assertions: { can_view: true, can_edit: false, can_comment: false }
       - user: list:backlog
         object: task:spec
         assertions: { list: true }
       - user: list:other
         object: task:spec
         assertions: { list: false }
+
+  # --- tasks inherit from the list and project -------------------------------------
+
+  - name: a project owner should edit tasks through the list but not complete them
+    # WHEN  checking alice, who owns the project but not the task
+    # THEN  she can edit through the list, not complete
+    check:
+      - user: user:alice
+        object: task:spec
+        assertions: { owner: false, can_edit: true, can_complete: false }
+
+  - name: a project contributor should edit and comment on tasks but not complete them
+    # WHEN  checking frank, a project contributor
+    # THEN  he can view, edit and comment, not complete
+    check:
+      - user: user:frank
+        object: task:spec
+        assertions: { owner: false, can_view: true, can_edit: true, can_complete: false, can_comment: true }
     list_objects:
       - user: user:frank
         type: task
         assertions:
           can_edit: [task:spec]
+
+  - name: a project viewer should only read tasks
+    # WHEN  checking carol, a project viewer
+    # THEN  she can view, not edit or comment
+    check:
+      - user: user:carol
+        object: task:spec
+        assertions: { can_view: true, can_edit: false, can_comment: false }
+
+  - name: a list collaborator should edit and comment on the list's tasks but not complete them
+    # WHEN  checking erin, a collaborator on list:backlog
+    # THEN  she can view, edit and comment, not complete
+    check:
+      - user: user:erin
+        object: task:spec
+        assertions: { can_view: true, can_edit: true, can_comment: true, can_complete: false }
+
+  - name: a list viewer should only read the list's tasks
+    # WHEN  checking lou, a viewer of list:backlog
+    # THEN  he can view, not edit, comment or complete
+    check:
+      - user: user:lou
+        object: task:spec
+        assertions: { can_view: true, can_edit: false, can_comment: false, can_complete: false }
+
+  - name: an outsider should get nothing on a task
+    # WHEN  checking dave, who has no relation
+    # THEN  every task permission is denied
+    check:
+      - user: user:dave
+        object: task:spec
+        assertions: { can_view: false, can_edit: false, can_comment: false, can_complete: false }
+
+  - name: listing a task should return who can complete and edit it
+    # WHEN  listing task:spec's completers and editors
+    # THEN  completers are tom and bob; editors add alice, frank and erin
     list_users:
       - object: task:spec
         user_filter: [{ type: user }]
         assertions:
           can_complete: { users: [user:tom, user:bob] }
-          can_edit: { users: [user:tom, user:bob, user:alice, user:frank] }
+          can_edit: { users: [user:tom, user:bob, user:alice, user:frank, user:erin] }
 
-  - name: The tasks module extends project with can_create_task
+  # --- project permissions added by the tasks module ---------------------------------
+
+  - name: a project editor should create tasks
+    # WHEN  checking frank's can_create_task, added to project by the tasks module
+    # THEN  he can create tasks
     check:
       - user: user:frank
         object: project:roadmap
         assertions: { can_create_task: true }
+
+  - name: a project viewer should not create tasks
+    # WHEN  checking carol's can_create_task
+    # THEN  she can't create tasks
+    check:
       - user: user:carol
         object: project:roadmap
         assertions: { can_create_task: false }
-
-  - name: Outsiders get nothing
-    check:
-      - user: user:dave
-        object: task:spec
-        assertions: { can_view: false, can_edit: false, can_comment: false, can_complete: false }

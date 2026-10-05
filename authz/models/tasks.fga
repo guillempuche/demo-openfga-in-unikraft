@@ -6,9 +6,12 @@ extend type project
   relations
     define can_create_task: can_edit
     # feature: conditions on usersets (map<string>) + intersection — exporting
-    # needs a plan that enables it and read access to the project.
+    # needs a plan that enables it, read access to the project, and membership
+    # of the project's own org. (A model can't require that the exporter
+    # userset be that org, so a member of another org who is granted exporter
+    # still needs to belong to the project's org.)
     define exporter: [org#member with plan_allows]
-    define can_export: exporter and can_view
+    define can_export: exporter and can_view and member from org
 
 type task
   relations
@@ -17,7 +20,9 @@ type task
     define assignee: [user]
     define follower: [user]
 
-    define can_view: owner or assignee or follower or can_view from list
-    define can_edit: owner or assignee or can_edit from list
-    define can_complete: owner or assignee
-    define can_comment: owner or assignee or follower or can_edit from list
+    # A block on the project (via its list) also overrides direct task roles.
+    define is_blocked: is_blocked from list
+    define can_view: (owner or assignee or follower or can_view from list) but not is_blocked
+    define can_edit: (owner or assignee or can_edit from list) but not is_blocked
+    define can_complete: (owner or assignee) but not is_blocked
+    define can_comment: (owner or assignee or follower or can_edit from list) but not is_blocked

@@ -3,6 +3,10 @@ name: Projects — roles, org admins and lists
 
 model_file: ./fga.mod
 
+# GIVEN (every test) project:roadmap in org:acme: alice owns it and is an org
+# member; bob contributes; carol views; team:design contributes and team:sales
+# views; olivia is acme's admin. list:backlog belongs to the project: dana
+# owns it, erin collaborates, frank views. olga is an admin of org:globex.
 tuples:
   - { user: org:acme, relation: org, object: project:roadmap }
   - { user: user:alice, relation: owner, object: project:roadmap }
@@ -10,6 +14,7 @@ tuples:
   - { user: user:bob, relation: contributor, object: project:roadmap }
   - { user: user:carol, relation: viewer, object: project:roadmap }
   - { user: user:olivia, relation: admin, object: org:acme }
+  - { user: user:olga, relation: admin, object: org:globex }
   - { user: project:roadmap, relation: project, object: list:backlog }
   - { user: user:dana, relation: owner, object: list:backlog }
   - { user: user:erin, relation: collaborator, object: list:backlog }
@@ -20,7 +25,11 @@ tuples:
   - { user: user:sal, relation: member, object: team:sales }
 
 tests:
-  - name: Owner has full control
+  # --- project roles -----------------------------------------------------------
+
+  - name: a project owner should have full control
+    # WHEN  checking alice's project permissions
+    # THEN  she can manage, edit, view and share, as owner and member only
     check:
       - user: user:alice
         object: project:roadmap
@@ -33,38 +42,67 @@ tests:
           can_edit: true
           can_view: true
           can_share: true
+          is_blocked: false
 
-  - name: Contributor edits, viewer reads
+  - name: a contributor should edit but not manage the project
+    # WHEN  checking bob, a contributor
+    # THEN  he can edit and view, not manage
     check:
       - user: user:bob
         object: project:roadmap
         assertions: { contributor: true, member: true, can_manage: false, can_edit: true, can_view: true }
+
+  - name: a viewer should read but not edit the project
+    # WHEN  checking carol, a viewer
+    # THEN  she can view, not edit
+    check:
       - user: user:carol
         object: project:roadmap
         assertions: { viewer: true, member: true, can_edit: false, can_view: true }
 
-  - name: Project roles can be granted to whole teams
+  - name: a member of a contributing team should edit the project
+    # WHEN  checking dee, a member of team:design
+    # THEN  she is a contributor through the team and can edit
     check:
       - user: user:dee
         object: project:roadmap
         assertions: { contributor: true, can_edit: true }
+
+  - name: a member of a viewing team should only read the project
+    # WHEN  checking sal, a member of team:sales
+    # THEN  he is a viewer through the team: he can view, not edit
+    check:
       - user: user:sal
         object: project:roadmap
         assertions: { contributor: false, viewer: true, can_view: true, can_edit: false }
 
-  - name: Org admins manage every project in the org without being members
+  - name: an org admin should manage every project in the org without being a member
+    # WHEN  checking olivia, acme's admin, who has no project role
+    # THEN  she can manage, edit and view, without being an owner or member
     check:
       - user: user:olivia
         object: project:roadmap
         assertions: { owner: false, member: false, can_manage: true, can_edit: true, can_view: true }
 
-  - name: Outsiders get nothing
+  - name: an admin of another org should get nothing on the project
+    # WHEN  checking olga, admin of org:globex
+    # THEN  she can't manage, edit or view an acme project
+    check:
+      - user: user:olga
+        object: project:roadmap
+        assertions: { can_manage: false, can_edit: false, can_view: false }
+
+  - name: an outsider should get nothing on the project
+    # WHEN  checking mallory, who has no relation at all
+    # THEN  every permission is denied
     check:
       - user: user:mallory
         object: project:roadmap
         assertions: { owner: false, member: false, can_manage: false, can_edit: false, can_view: false, can_share: false }
 
-  - name: Projects and lists point at their parents
+  - name: projects and lists should point at their parents only
+    # WHEN  checking the org of project:roadmap and the project of list:backlog
+    # THEN  they are org:acme and project:roadmap, and nothing else
     check:
       - user: org:acme
         object: project:roadmap
@@ -79,40 +117,10 @@ tests:
         object: list:backlog
         assertions: { project: false }
 
-  - name: Lists inherit from their project
-    check:
-      - user: user:bob
-        object: list:backlog
-        assertions: { member: false, can_edit: true, can_view: true, can_share: false }
-      - user: user:carol
-        object: list:backlog
-        assertions: { member: false, can_edit: false, can_view: true }
-      - user: user:olivia
-        object: list:backlog
-        assertions: { member: false, can_view: true }
-      - user: user:alice
-        object: list:backlog
-        assertions: { owner: false, can_share: true }
-      - user: user:dana
-        object: list:backlog
-        assertions: { owner: true, collaborator: false, member: true, can_edit: true, can_share: true }
-      - user: user:erin
-        object: list:backlog
-        assertions: { collaborator: true, viewer: false, member: true, can_edit: true, can_share: true }
-      - user: user:frank
-        object: list:backlog
-        assertions: { viewer: true, member: true, can_view: true, can_edit: false, can_share: false }
-      - user: user:erin
-        object: project:roadmap
-        assertions: { can_view: false }
-      - user: user:mallory
-        object: list:backlog
-        assertions: { member: false, can_view: false }
+  - name: listing a project should return who can edit and view it
+    # WHEN  listing project:roadmap's editors and viewers, and alice's projects
+    # THEN  editors are alice, bob, olivia and dee; viewers add carol and sal
     list_objects:
-      - user: user:bob
-        type: list
-        assertions:
-          can_edit: [list:backlog]
       - user: user:alice
         type: project
         assertions:
@@ -124,6 +132,90 @@ tests:
         assertions:
           can_edit: { users: [user:alice, user:bob, user:olivia, user:dee] }
           can_view: { users: [user:alice, user:bob, user:carol, user:olivia, user:dee, user:sal] }
+
+  # --- lists inherit from their project ------------------------------------------
+
+  - name: a project contributor should edit the project's lists
+    # WHEN  checking bob on list:backlog
+    # THEN  he can edit and view it without a list role, but not share it
+    check:
+      - user: user:bob
+        object: list:backlog
+        assertions: { member: false, can_edit: true, can_view: true, can_share: false }
+    list_objects:
+      - user: user:bob
+        type: list
+        assertions:
+          can_edit: [list:backlog]
+
+  - name: a project viewer should only read the project's lists
+    # WHEN  checking carol on list:backlog
+    # THEN  she can view it, not edit it
+    check:
+      - user: user:carol
+        object: list:backlog
+        assertions: { member: false, can_edit: false, can_view: true }
+
+  - name: an org admin should read the lists of the org's projects
+    # WHEN  checking olivia on list:backlog
+    # THEN  she can view it without being a list member
+    check:
+      - user: user:olivia
+        object: list:backlog
+        assertions: { member: false, can_view: true }
+
+  - name: a project owner who is an org member should share the project's lists
+    # WHEN  checking alice on list:backlog
+    # THEN  she can share it without owning it
+    check:
+      - user: user:alice
+        object: list:backlog
+        assertions: { owner: false, can_share: true }
+
+  - name: a list owner should edit and share the list
+    # WHEN  checking dana, the list's owner
+    # THEN  she is a member who can edit and share it
+    check:
+      - user: user:dana
+        object: list:backlog
+        assertions: { owner: true, collaborator: false, member: true, can_edit: true, can_share: true, is_blocked: false }
+
+  - name: a list collaborator should edit and share the list
+    # WHEN  checking erin, a collaborator
+    # THEN  she can edit and share it
+    check:
+      - user: user:erin
+        object: list:backlog
+        assertions: { collaborator: true, viewer: false, member: true, can_edit: true, can_share: true }
+
+  - name: a list viewer should only read the list
+    # WHEN  checking frank, a list viewer
+    # THEN  he can view it, not edit or share it
+    check:
+      - user: user:frank
+        object: list:backlog
+        assertions: { viewer: true, member: true, can_view: true, can_edit: false, can_share: false }
+
+  - name: a list role should not grant access to the project
+    # WHEN  checking erin, a list collaborator, on the project itself
+    # THEN  she can't view project:roadmap
+    check:
+      - user: user:erin
+        object: project:roadmap
+        assertions: { can_view: false }
+
+  - name: an outsider should get nothing on a list
+    # WHEN  checking mallory on list:backlog
+    # THEN  she is not a member and can't view it
+    check:
+      - user: user:mallory
+        object: list:backlog
+        assertions: { member: false, can_view: false }
+
+  - name: listing a list should return project editors and list editors
+    # WHEN  listing who can edit list:backlog
+    # THEN  it is the project's editors plus dana and erin
+    list_users:
       - object: list:backlog
         user_filter: [{ type: user }]
         assertions:

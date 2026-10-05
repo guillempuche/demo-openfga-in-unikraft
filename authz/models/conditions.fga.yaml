@@ -5,8 +5,15 @@ name: Conditions — time, network, region and plan
 model_file: ./fga.mod
 
 tests:
-  - name: Some contributors may only edit from the office network (ipaddress)
-    tuples:
+  # --- ipaddress: office network ---------------------------------------------------
+  # GIVEN (these tests) bob contributes to project:roadmap unconditionally; remy
+  #       contributes only from the office network 10.20.0.0/16. list:backlog
+  #       and task:spec sit under the project.
+
+  - name: an office-only contributor should edit from inside the office network
+    # WHEN  remy checks from 10.20.4.7
+    # THEN  he is a contributor and can edit
+    tuples: &office
       - { user: user:bob, relation: contributor, object: project:roadmap }
       - user: user:remy
         relation: contributor
@@ -14,22 +21,111 @@ tests:
         condition:
           name: from_office_network
           context: { office_cidr: "10.20.0.0/16" }
+      - { user: project:roadmap, relation: project, object: list:backlog }
+      - { user: list:backlog, relation: list, object: task:spec }
     check:
       - user: user:remy
         object: project:roadmap
         context: { user_ip: "10.20.4.7" }
         assertions: { contributor: true, can_edit: true }
+
+  - name: an office-only contributor should not edit from outside the office network
+    # WHEN  remy checks from 203.0.113.9
+    # THEN  he is not a contributor and can't edit
+    tuples: *office
+    check:
       - user: user:remy
         object: project:roadmap
         context: { user_ip: "203.0.113.9" }
         assertions: { contributor: false, can_edit: false }
-      # bob's grant has no condition, so no context is needed.
+
+  - name: the office network should include both ends of its CIDR range
+    # WHEN  remy checks from 10.20.0.0 and from 10.20.255.255
+    # THEN  both addresses are inside 10.20.0.0/16
+    tuples: *office
+    check:
+      - user: user:remy
+        object: project:roadmap
+        context: { user_ip: "10.20.0.0" }
+        assertions: { can_edit: true }
+      - user: user:remy
+        object: project:roadmap
+        context: { user_ip: "10.20.255.255" }
+        assertions: { can_edit: true }
+
+  - name: the office network should exclude the addresses just outside its range
+    # WHEN  remy checks from 10.19.255.255 and from 10.21.0.0
+    # THEN  both addresses are outside 10.20.0.0/16
+    tuples: *office
+    check:
+      - user: user:remy
+        object: project:roadmap
+        context: { user_ip: "10.19.255.255" }
+        assertions: { can_edit: false }
+      - user: user:remy
+        object: project:roadmap
+        context: { user_ip: "10.21.0.0" }
+        assertions: { can_edit: false }
+
+  - name: a request should not be able to widen the network stored on the grant
+    # WHEN  remy checks from outside the office and sends office_cidr 0.0.0.0/0
+    # THEN  the tuple's own office_cidr wins and he can't edit
+    tuples: *office
+    check:
+      - user: user:remy
+        object: project:roadmap
+        context: { user_ip: "203.0.113.9", office_cidr: "0.0.0.0/0" }
+        assertions: { can_edit: false }
+
+  - name: an unconditional grant should need no context
+    # WHEN  bob checks without any context
+    # THEN  he is a contributor and can edit (remy's conditional path isn't reached)
+    tuples: *office
+    check:
       - user: user:bob
         object: project:roadmap
-        assertions: { contributor: true }
+        assertions: { contributor: true, can_edit: true }
 
-  - name: A team can get temporary read access to a folder (timestamp, duration, on a userset)
-    tuples:
+  - name: an office-only contributor should edit lists and tasks and create tasks only from the office
+    # WHEN  remy checks the list, the task and can_create_task from inside and outside
+    # THEN  everything is allowed inside the office and denied outside
+    tuples: *office
+    check:
+      - user: user:remy
+        object: list:backlog
+        context: { user_ip: "10.20.4.7" }
+        assertions: { can_edit: true }
+      - user: user:remy
+        object: task:spec
+        context: { user_ip: "10.20.4.7" }
+        assertions: { can_edit: true, can_comment: true }
+      - user: user:remy
+        object: project:roadmap
+        context: { user_ip: "10.20.4.7" }
+        assertions: { can_create_task: true }
+      - user: user:remy
+        object: list:backlog
+        context: { user_ip: "203.0.113.9" }
+        assertions: { can_edit: false }
+      - user: user:remy
+        object: task:spec
+        context: { user_ip: "203.0.113.9" }
+        assertions: { can_edit: false, can_comment: false }
+      - user: user:remy
+        object: project:roadmap
+        context: { user_ip: "203.0.113.9" }
+        assertions: { can_create_task: false }
+
+  # --- timestamp + duration: a team's temporary folder access ----------------------
+  # GIVEN (these tests) ann is in team:auditors, which may view folder:finance
+  #       from 2026-10-01T00:00Z for 72h (until 2026-10-04T00:00Z).
+  #       folder:finance-q3 is inside it and holds project:budget, with
+  #       list:items and task:t under it.
+
+  - name: a team's temporary folder access should be live inside its window
+    # WHEN  ann checks folder:finance on 2026-10-02
+    # THEN  she can view it, and lists it among her folders
+    tuples: &auditors
       - { user: user:ann, relation: member, object: team:auditors }
       - user: team:auditors#member
         relation: viewer
@@ -37,39 +133,130 @@ tests:
         condition:
           name: non_expired_grant
           context: { grant_time: "2026-10-01T00:00:00Z", grant_duration: 72h }
+      - { user: folder:finance, relation: parent, object: folder:finance-q3 }
+      - { user: folder:finance-q3, relation: folder, object: project:budget }
+      - { user: project:budget, relation: project, object: list:items }
+      - { user: list:items, relation: list, object: task:t }
     check:
       - user: user:ann
         object: folder:finance
         context: { current_time: "2026-10-02T09:00:00Z" }
         assertions: { viewer: true }
-      - user: user:ann
-        object: folder:finance
-        context: { current_time: "2026-10-05T09:00:00Z" }
-        assertions: { viewer: false }
     list_objects:
       - user: user:ann
         type: folder
         context: { current_time: "2026-10-02T09:00:00Z" }
         assertions:
-          viewer: [folder:finance]
+          viewer: [folder:finance, folder:finance-q3]
 
-  - name: Contractors are org members only from allowed regions (list<string>)
-    tuples:
+  - name: a team's temporary folder access should start exactly at grant_time
+    # WHEN  ann checks one second before and exactly at 2026-10-01T00:00Z
+    # THEN  she can't view it before, and can at grant_time
+    tuples: *auditors
+    check:
+      - user: user:ann
+        object: folder:finance
+        context: { current_time: "2026-09-30T23:59:59Z" }
+        assertions: { viewer: false }
+      - user: user:ann
+        object: folder:finance
+        context: { current_time: "2026-10-01T00:00:00Z" }
+        assertions: { viewer: true }
+
+  - name: a team's temporary folder access should end exactly at grant_time plus duration
+    # WHEN  ann checks one second before and exactly at 2026-10-04T00:00Z
+    # THEN  she can view it before, and can't at the expiry instant
+    tuples: *auditors
+    check:
+      - user: user:ann
+        object: folder:finance
+        context: { current_time: "2026-10-03T23:59:59Z" }
+        assertions: { viewer: true }
+      - user: user:ann
+        object: folder:finance
+        context: { current_time: "2026-10-04T00:00:00Z" }
+        assertions: { viewer: false }
+
+  - name: a team's temporary folder access should reach sub-folders, projects, lists and tasks while live
+    # WHEN  ann checks every level below folder:finance on 2026-10-02
+    # THEN  she can view all of them, and lists project:budget
+    tuples: *auditors
+    check:
+      - user: user:ann
+        object: folder:finance-q3
+        context: { current_time: "2026-10-02T09:00:00Z" }
+        assertions: { viewer: true }
+      - user: user:ann
+        object: project:budget
+        context: { current_time: "2026-10-02T09:00:00Z" }
+        assertions: { can_view: true, can_edit: false }
+      - user: user:ann
+        object: list:items
+        context: { current_time: "2026-10-02T09:00:00Z" }
+        assertions: { can_view: true }
+      - user: user:ann
+        object: task:t
+        context: { current_time: "2026-10-02T09:00:00Z" }
+        assertions: { can_view: true }
+    list_objects:
+      - user: user:ann
+        type: project
+        context: { current_time: "2026-10-02T09:00:00Z" }
+        assertions:
+          can_view: [project:budget]
+
+  - name: a team's expired folder access should be gone at every level below
+    # WHEN  ann checks every level below folder:finance on 2026-10-05
+    # THEN  she can view none of them, and lists no project
+    tuples: *auditors
+    check:
+      - user: user:ann
+        object: folder:finance
+        context: { current_time: "2026-10-05T09:00:00Z" }
+        assertions: { viewer: false }
+      - user: user:ann
+        object: project:budget
+        context: { current_time: "2026-10-05T09:00:00Z" }
+        assertions: { can_view: false }
+      - user: user:ann
+        object: task:t
+        context: { current_time: "2026-10-05T09:00:00Z" }
+        assertions: { can_view: false }
+    list_objects:
+      - user: user:ann
+        type: project
+        context: { current_time: "2026-10-05T09:00:00Z" }
+        assertions:
+          can_view: []
+
+  # --- list<string>: contractors from allowed regions ------------------------------
+  # GIVEN (these tests) carlos is an acme member only from eu-west or
+  #       eu-central, and contributes to project:roadmap (org:acme). cleo is an
+  #       acme member with an empty list of allowed regions.
+
+  - name: a contractor should be an org member from an allowed region
+    # WHEN  carlos checks from eu-west, and the org's members are listed from eu-central
+    # THEN  he is a member and is listed
+    tuples: &contractors
       - user: user:carlos
         relation: member
         object: org:acme
         condition:
           name: in_allowed_regions
           context: { allowed_regions: [eu-west, eu-central] }
+      - user: user:cleo
+        relation: member
+        object: org:acme
+        condition:
+          name: in_allowed_regions
+          context: { allowed_regions: [] }
+      - { user: org:acme, relation: org, object: project:roadmap }
+      - { user: user:carlos, relation: contributor, object: project:roadmap }
     check:
       - user: user:carlos
         object: org:acme
         context: { region: eu-west }
         assertions: { member: true }
-      - user: user:carlos
-        object: org:acme
-        context: { region: us-east }
-        assertions: { member: false }
     list_users:
       - object: org:acme
         user_filter: [{ type: user }]
@@ -77,13 +264,69 @@ tests:
         assertions:
           member: { users: [user:carlos] }
 
-  - name: Exporting needs a plan that enables it (map<string>, on a userset)
-    tuples:
+  - name: a contractor should not be an org member from another region
+    # WHEN  carlos checks from us-east, and from EU-WEST (regions are case-sensitive)
+    # THEN  he isn't a member either way
+    tuples: *contractors
+    check:
+      - user: user:carlos
+        object: org:acme
+        context: { region: us-east }
+        assertions: { member: false }
+      - user: user:carlos
+        object: org:acme
+        context: { region: EU-WEST }
+        assertions: { member: false }
+
+  - name: an empty list of allowed regions should allow no region
+    # WHEN  cleo checks from eu-west
+    # THEN  she isn't a member
+    tuples: *contractors
+    check:
+      - user: user:cleo
+        object: org:acme
+        context: { region: eu-west }
+        assertions: { member: false }
+
+  - name: a contractor should share a project only from an allowed region
+    # WHEN  carlos, who edits project:roadmap, checks can_share from eu-west and us-east
+    # THEN  he can share from eu-west (org member there) and not from us-east
+    tuples: *contractors
+    check:
+      - user: user:carlos
+        object: project:roadmap
+        context: { region: eu-west }
+        assertions: { can_edit: true, can_share: true }
+      - user: user:carlos
+        object: project:roadmap
+        context: { region: us-east }
+        assertions: { can_edit: true, can_share: false }
+
+  # --- map<string>: exporting needs a plan that enables it -------------------------
+  # GIVEN (these tests) project:roadmap in org:acme; alice owns it and is an
+  #       acme member; mark is an acme member who can't view it; olivia is
+  #       acme's admin; ola is a member of org:globex and views the project.
+  #       org:acme's members, and org:globex's, are exporters of the project
+  #       when the plan enables the "export" feature.
+
+  - name: an org member who can view should export when the plan enables it
+    # WHEN  alice checks with plan { export: enabled }
+    # THEN  she is an exporter and can export
+    tuples: &export
       - { user: org:acme, relation: org, object: project:roadmap }
       - { user: user:alice, relation: owner, object: project:roadmap }
       - { user: user:alice, relation: member, object: org:acme }
       - { user: user:mark, relation: member, object: org:acme }
+      - { user: user:olivia, relation: admin, object: org:acme }
+      - { user: user:ola, relation: member, object: org:globex }
+      - { user: user:ola, relation: viewer, object: project:roadmap }
       - user: org:acme#member
+        relation: exporter
+        object: project:roadmap
+        condition:
+          name: plan_allows
+          context: { feature: export }
+      - user: org:globex#member
         relation: exporter
         object: project:roadmap
         condition:
@@ -94,12 +337,79 @@ tests:
         object: project:roadmap
         context: { plan: { export: enabled } }
         assertions: { exporter: true, can_export: true }
+
+  - name: nobody should export when the plan disables the feature
+    # WHEN  alice checks with plan { export: disabled }
+    # THEN  she isn't an exporter and can't export
+    tuples: *export
+    check:
       - user: user:alice
         object: project:roadmap
         context: { plan: { export: disabled } }
         assertions: { exporter: false, can_export: false }
-      # mark is an org member (so an exporter) but can't view the project.
+
+  - name: nobody should export when the plan doesn't mention the feature
+    # WHEN  alice checks with a plan without an "export" key, and with an empty plan
+    # THEN  she can't export either way (and the check doesn't error)
+    tuples: *export
+    check:
+      - user: user:alice
+        object: project:roadmap
+        context: { plan: { seats: "10" } }
+        assertions: { exporter: false, can_export: false }
+      - user: user:alice
+        object: project:roadmap
+        context: { plan: {} }
+        assertions: { exporter: false, can_export: false }
+
+  - name: an exporter who can't view the project should not export
+    # WHEN  mark, an acme member without a project role, checks with the feature enabled
+    # THEN  he is an exporter but can't export
+    tuples: *export
+    check:
       - user: user:mark
+        object: project:roadmap
+        context: { plan: { export: enabled } }
+        assertions: { exporter: true, can_export: false }
+
+  - name: an org admin should export when the plan enables it
+    # WHEN  olivia, acme's admin (a member through admin), checks with the feature enabled
+    # THEN  she can view the project through the org and can export
+    tuples: *export
+    check:
+      - user: user:olivia
+        object: project:roadmap
+        context: { plan: { export: enabled } }
+        assertions: { exporter: true, can_export: true }
+
+  - name: an exporter from another org should not export
+    # WHEN  ola, a globex member who views the project, checks with the feature enabled
+    # THEN  she is an exporter (through org:globex) but can't export: she isn't
+    #       a member of the project's org
+    tuples: *export
+    check:
+      - user: user:ola
+        object: project:roadmap
+        context: { plan: { export: enabled } }
+        assertions: { exporter: true, can_view: true, can_export: false }
+
+  - name: an exporter blocked on the project should not export
+    # AND   alice is also blocked on the project
+    # WHEN  alice checks with the feature enabled
+    # THEN  she can't view, so she can't export
+    tuples:
+      - { user: org:acme, relation: org, object: project:roadmap }
+      - { user: user:alice, relation: owner, object: project:roadmap }
+      - { user: user:alice, relation: member, object: org:acme }
+      - { user: user:alice, relation: blocked, object: project:roadmap }
+      - user: org:acme#member
+        relation: exporter
+        object: project:roadmap
+        condition:
+          name: plan_allows
+          context: { feature: export }
+    check:
+      - user: user:alice
         object: project:roadmap
         context: { plan: { export: enabled } }
         assertions: { exporter: true, can_export: false }

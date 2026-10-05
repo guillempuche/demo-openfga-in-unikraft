@@ -3,13 +3,26 @@ name: Nesting — folders, sub-folders and the projects inside them
 
 model_file: ./fga.mod
 
+# GIVEN (every test) folder:eng (org:acme) contains folder:eng-api, which
+# contains folder:eng-api-v2, which holds project:gateway (org:acme) with
+# list:api and task:t under it. team:platform owns folder:eng; tess is in
+# team:platform and sam is in team:sre ⊂ team:infra ⊂ team:platform. ed edits
+# folder:eng-api; vic views folder:eng; tess is an acme member. folder:ops is
+# owned by fay, edited by team:qa (quinn) and viewed by team:support (sue).
 tuples:
   - { user: org:acme, relation: org, object: folder:eng }
   - { user: folder:eng, relation: parent, object: folder:eng-api }
   - { user: folder:eng-api, relation: parent, object: folder:eng-api-v2 }
   - { user: folder:eng-api-v2, relation: folder, object: project:gateway }
+  - { user: org:acme, relation: org, object: project:gateway }
+  - { user: project:gateway, relation: project, object: list:api }
+  - { user: list:api, relation: list, object: task:t }
   - { user: team:platform#member, relation: owner, object: folder:eng }
   - { user: user:tess, relation: member, object: team:platform }
+  - { user: user:tess, relation: member, object: org:acme }
+  - { user: team:infra#member, relation: member, object: team:platform }
+  - { user: team:sre#member, relation: member, object: team:infra }
+  - { user: user:sam, relation: member, object: team:sre }
   - { user: user:ed, relation: editor, object: folder:eng-api }
   - { user: user:vic, relation: viewer, object: folder:eng }
   - { user: user:fay, relation: owner, object: folder:ops }
@@ -19,38 +32,58 @@ tuples:
   - { user: user:sue, relation: member, object: team:support }
 
 tests:
-  - name: Grants on a folder reach every sub-folder and project below it
+  # --- folders ---------------------------------------------------------------------
+
+  - name: a folder owner should edit and manage every sub-folder below
+    # WHEN  checking tess (owner of folder:eng through team:platform)
+    # THEN  she owns folder:eng and edits, views and manages folder:eng-api-v2
     check:
       - user: user:tess
-        object: folder:eng-api-v2
-        assertions: { owner: false, editor: true, viewer: true }
-      - user: user:tess
         object: folder:eng
-        assertions: { owner: true }
+        assertions: { owner: true, manager: true }
+      - user: user:tess
+        object: folder:eng-api-v2
+        assertions: { owner: false, manager: true, editor: true, viewer: true }
+
+  - name: a folder editor should edit sub-folders but not the folders above
+    # WHEN  checking ed, editor of folder:eng-api
+    # THEN  he edits folder:eng-api-v2 but nothing in folder:eng, and manages nothing
+    check:
       - user: user:ed
         object: folder:eng-api-v2
-        assertions: { editor: true }
+        assertions: { editor: true, manager: false }
       - user: user:ed
         object: folder:eng
         assertions: { editor: false, viewer: false }
+    list_objects:
+      - user: user:ed
+        type: folder
+        assertions:
+          editor: [folder:eng-api, folder:eng-api-v2]
+
+  - name: a folder viewer should only read every sub-folder below
+    # WHEN  checking vic, viewer of folder:eng
+    # THEN  she views folder:eng-api-v2 but can't edit it
+    check:
       - user: user:vic
         object: folder:eng-api-v2
         assertions: { viewer: true, editor: false }
-      - user: user:tess
-        object: project:gateway
-        assertions: { can_edit: true, can_view: true }
-      - user: user:vic
-        object: project:gateway
-        assertions: { can_edit: false, can_view: true }
+
+  - name: an outsider should get nothing on a folder
+    # WHEN  checking mallory on folder:eng-api
+    # THEN  she can't view it
+    check:
       - user: user:mallory
         object: folder:eng-api
-        assertions: { viewer: false }
+        assertions: { viewer: false, manager: false }
 
-  - name: Folder roles can be granted to users or to whole teams
+  - name: folder roles should be grantable to users or to whole teams
+    # WHEN  checking fay (owner), quinn (team:qa editor) and sue (team:support viewer) on folder:ops
+    # THEN  fay owns and edits; quinn edits and views; sue only views
     check:
       - user: user:fay
         object: folder:ops
-        assertions: { owner: true, editor: true }
+        assertions: { owner: true, editor: true, manager: true }
       - user: user:quinn
         object: folder:ops
         assertions: { owner: false, editor: true, viewer: true }
@@ -58,7 +91,9 @@ tests:
         object: folder:ops
         assertions: { editor: false, viewer: true }
 
-  - name: Folders point at their org, parent and projects
+  - name: folders should point at their org, parent and projects only
+    # WHEN  checking folder:eng's org, folder:eng-api's parent and project:gateway's folder
+    # THEN  each points at exactly the object it was given
     check:
       - user: org:acme
         object: folder:eng
@@ -78,17 +113,72 @@ tests:
       - user: folder:eng
         object: project:gateway
         assertions: { folder: false }
-    list_objects:
-      - user: user:ed
-        type: folder
-        assertions:
-          editor: [folder:eng-api, folder:eng-api-v2]
+
+  - name: listing a folder should return its editors from every level
+    # WHEN  listing who edits folder:eng-api
+    # THEN  it is ed, plus tess and sam through team:platform
     list_users:
       - object: folder:eng-api
         user_filter: [{ type: user }]
         assertions:
-          editor: { users: [user:ed, user:tess] }
+          editor: { users: [user:ed, user:tess, user:sam] }
+
+  # --- projects, lists and tasks inside folders --------------------------------
+
+  - name: a folder owner should manage, edit and share projects in any sub-folder
+    # WHEN  checking tess on project:gateway, three folders down
+    # THEN  she manages, edits, views and (as an acme member) shares it
+    check:
+      - user: user:tess
+        object: project:gateway
+        assertions: { can_manage: true, can_edit: true, can_view: true, can_share: true }
+
+  - name: a member of a nested sub-team should edit projects in a team-owned folder
+    # WHEN  checking sam (team:sre ⊂ infra ⊂ platform) on project:gateway
+    # THEN  he can edit it through the team and the folders
+    check:
+      - user: user:sam
+        object: project:gateway
+        assertions: { can_edit: true, can_manage: true }
+
+  - name: a folder viewer should only read projects in any sub-folder
+    # WHEN  checking vic on project:gateway
+    # THEN  she can view it, not edit or manage it
+    check:
+      - user: user:vic
+        object: project:gateway
+        assertions: { can_edit: false, can_view: true, can_manage: false }
+
+  - name: a folder editor should edit projects in the folder but not manage them
+    # WHEN  checking ed on project:gateway
+    # THEN  he edits it and doesn't manage it
+    check:
+      - user: user:ed
+        object: project:gateway
+        assertions: { can_edit: true, can_manage: false }
+
+  - name: folder access should carry on to the project's lists and tasks
+    # WHEN  checking tess and vic on list:api and task:t
+    # THEN  tess edits and comments on both; vic only reads them
+    check:
+      - user: user:tess
+        object: list:api
+        assertions: { can_edit: true, can_view: true }
+      - user: user:tess
+        object: task:t
+        assertions: { can_edit: true, can_comment: true, can_view: true }
+      - user: user:vic
+        object: list:api
+        assertions: { can_edit: false, can_view: true }
+      - user: user:vic
+        object: task:t
+        assertions: { can_edit: false, can_comment: false, can_view: true }
+
+  - name: listing a project in a folder should return the folder's editors
+    # WHEN  listing who edits project:gateway
+    # THEN  it is ed, tess and sam
+    list_users:
       - object: project:gateway
         user_filter: [{ type: user }]
         assertions:
-          can_edit: { users: [user:ed, user:tess] }
+          can_edit: { users: [user:ed, user:tess, user:sam] }

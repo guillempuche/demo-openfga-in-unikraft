@@ -4,9 +4,10 @@ module conditions
 # come from the tuple's stored context and from the request's context.
 # Docs: https://openfga.dev/docs/modeling/conditions
 
-# feature: conditions (timestamp, duration) — access that expires.
+# feature: conditions (timestamp, duration) — access for a time window: from
+# grant_time (a grant dated in the future isn't active yet) until it expires.
 condition non_expired_grant(current_time: timestamp, grant_time: timestamp, grant_duration: duration) {
-  current_time < grant_time + grant_duration
+  current_time >= grant_time && current_time < grant_time + grant_duration
 }
 
 # feature: conditions (ipaddress) — access only from the office network.

@@ -3,6 +3,10 @@ name: Intersection — sharing needs edit rights and org membership
 
 model_file: ./fga.mod
 
+# GIVEN (every test) project:roadmap in org:acme: alice owns it and is an org
+# member; bob contributes but isn't an org member; mark is an org member who
+# only views. folder:eng holds project:gateway (org:acme) and is owned by
+# fay, an acme member.
 tuples:
   - { user: org:acme, relation: org, object: project:roadmap }
   - { user: user:alice, relation: owner, object: project:roadmap }
@@ -10,21 +14,45 @@ tuples:
   - { user: user:bob, relation: contributor, object: project:roadmap }
   - { user: user:mark, relation: member, object: org:acme }
   - { user: user:mark, relation: viewer, object: project:roadmap }
+  - { user: org:acme, relation: org, object: project:gateway }
+  - { user: folder:eng, relation: folder, object: project:gateway }
+  - { user: user:fay, relation: owner, object: folder:eng }
+  - { user: user:fay, relation: member, object: org:acme }
 
 tests:
-  - name: Both sides of the intersection are required
+  - name: an editor who is an org member should share the project
+    # WHEN  checking alice, owner and acme member
+    # THEN  she can edit and share; she is the only one who can share
     check:
       - user: user:alice
         object: project:roadmap
         assertions: { can_edit: true, can_share: true }
-      - user: user:bob
-        object: project:roadmap
-        assertions: { can_edit: true, can_share: false }
-      - user: user:mark
-        object: project:roadmap
-        assertions: { can_edit: false, can_share: false }
     list_users:
       - object: project:roadmap
         user_filter: [{ type: user }]
         assertions:
           can_share: { users: [user:alice] }
+
+  - name: an editor who isn't an org member should not share the project
+    # WHEN  checking bob, a contributor outside org:acme
+    # THEN  he can edit but not share
+    check:
+      - user: user:bob
+        object: project:roadmap
+        assertions: { can_edit: true, can_share: false }
+
+  - name: an org member who can't edit should not share the project
+    # WHEN  checking mark, an acme member who only views
+    # THEN  he can neither edit nor share
+    check:
+      - user: user:mark
+        object: project:roadmap
+        assertions: { can_edit: false, can_share: false }
+
+  - name: a folder owner who is an org member should share projects in the folder
+    # WHEN  checking fay, owner of folder:eng, on project:gateway
+    # THEN  she manages and edits it through the folder, and can share it
+    check:
+      - user: user:fay
+        object: project:gateway
+        assertions: { can_manage: true, can_edit: true, can_share: true }

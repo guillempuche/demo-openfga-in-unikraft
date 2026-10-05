@@ -3,10 +3,19 @@ name: Public access — user:* wildcards
 
 model_file: ./fga.mod
 
+# GIVEN (every test) project:handbook in org:acme is public (user:* viewer)
+# and owned by alice; bea is blocked on it and bo is blocked in org:acme.
+# list:faq and task:q sit under it. project:launch is public for one week
+# from 2026-10-01T00:00Z; bea is blocked on it too.
 tuples:
   - { user: user:*, relation: viewer, object: project:handbook }
   - { user: user:alice, relation: owner, object: project:handbook }
+  - { user: org:acme, relation: org, object: project:handbook }
   - { user: user:bea, relation: blocked, object: project:handbook }
+  - { user: user:bo, relation: blocked, object: org:acme }
+  - { user: project:handbook, relation: project, object: list:faq }
+  - { user: list:faq, relation: list, object: task:q }
+  - { user: user:bea, relation: blocked, object: project:launch }
   - user: user:*
     relation: viewer
     object: project:launch
@@ -17,18 +26,105 @@ tuples:
         grant_duration: 168h
 
 tests:
-  - name: Anyone can view a public project, except blocked users
+  # --- permanent public access ---------------------------------------------------
+
+  - name: anyone should view a public project
+    # WHEN  checking zed, who has no relation
+    # THEN  zed is a viewer and can view, but not edit
     check:
       - user: user:zed
         object: project:handbook
         assertions: { viewer: true, can_view: true, can_edit: false }
+
+  - name: anyone should be a project member but not edit, share or create tasks
+    # WHEN  checking zed's other project permissions
+    # THEN  zed is a member (through viewer) and nothing more
+    check:
+      - user: user:zed
+        object: project:handbook
+        assertions: { member: true, can_edit: false, can_share: false, can_create_task: false }
+
+  - name: a user blocked on a public project should not view it
+    # WHEN  checking bea, blocked on project:handbook
+    # THEN  she is still a public viewer but can't view
+    check:
       - user: user:bea
         object: project:handbook
         assertions: { viewer: true, can_view: false }
+
+  - name: a user blocked in the org should not view the org's public project
+    # WHEN  checking bo, blocked in org:acme
+    # THEN  he can't view project:handbook
+    check:
+      - user: user:bo
+        object: project:handbook
+        assertions: { viewer: true, can_view: false }
+
+  - name: anyone should read the lists and tasks of a public project
+    # WHEN  checking zed on list:faq and task:q
+    # THEN  zed can view both, and only that
+    check:
+      - user: user:zed
+        object: list:faq
+        assertions: { can_view: true, can_edit: false }
+      - user: user:zed
+        object: task:q
+        assertions: { can_view: true, can_comment: false }
+
+  - name: listing a public project's users should return the wildcard, even with blocked users
+    # WHEN  listing who views project:handbook
+    # THEN  the answer is user:*; it can't exclude bea and bo, so callers must
+    #       still Check a specific user
+    list_users:
+      - object: project:handbook
+        user_filter: [{ type: user }]
+        assertions:
+          viewer: { users: [user:*] }
+
+  # --- time-limited public access ------------------------------------------------
+
+  - name: anyone should view a time-limited public project while the grant is live
+    # WHEN  checking zed on project:launch on 2026-10-04
+    # THEN  zed can view it
+    check:
+      - user: user:zed
+        object: project:launch
+        context: { current_time: "2026-10-04T12:00:00Z" }
+        assertions: { can_view: true }
+
+  - name: nobody should view a time-limited public project after the grant expires
+    # WHEN  checking zed on project:launch on 2026-10-09
+    # THEN  zed can't view it
+    check:
+      - user: user:zed
+        object: project:launch
+        context: { current_time: "2026-10-09T00:00:00Z" }
+        assertions: { can_view: false }
+
+  - name: nobody should view a time-limited public project before the grant starts
+    # WHEN  checking zed on project:launch on 2026-09-30
+    # THEN  zed can't view it yet
+    check:
+      - user: user:zed
+        object: project:launch
+        context: { current_time: "2026-09-30T23:59:59Z" }
+        assertions: { can_view: false }
+
+  - name: a blocked user should not view a time-limited public project while it is live
+    # WHEN  checking bea on project:launch during the grant
+    # THEN  she can't view it
+    check:
+      - user: user:bea
+        object: project:launch
+        context: { current_time: "2026-10-04T12:00:00Z" }
+        assertions: { can_view: false }
+
+  - name: listing public projects should follow the grant's time window
+    # WHEN  listing what zed and bea can view, during and after the grant
+    # THEN  zed sees both projects during it and only handbook after it; bea
+    #       sees neither (context is required: ListObjects errors, instead of
+    #       returning fewer objects, when a reachable condition lacks it)
     list_objects:
-      # Context is required: project:launch's public grant has a condition, and
-      # ListObjects returns an error (not a smaller list) if a reachable
-      # condition is missing parameters.
       - user: user:zed
         type: project
         context: { current_time: "2026-10-04T12:00:00Z" }
@@ -39,19 +135,8 @@ tests:
         context: { current_time: "2026-10-09T00:00:00Z" }
         assertions:
           can_view: [project:handbook]
-    list_users:
-      - object: project:handbook
-        user_filter: [{ type: user }]
-        assertions:
-          viewer: { users: [user:*] }
-
-  - name: A public grant can expire
-    check:
-      - user: user:zed
-        object: project:launch
+      - user: user:bea
+        type: project
         context: { current_time: "2026-10-04T12:00:00Z" }
-        assertions: { can_view: true }
-      - user: user:zed
-        object: project:launch
-        context: { current_time: "2026-10-09T00:00:00Z" }
-        assertions: { can_view: false }
+        assertions:
+          can_view: []

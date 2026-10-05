@@ -1,8 +1,19 @@
-# feature: exclusion (but not) with grouping
+# feature: exclusion (but not) — blocks on the project, in its org or in its folder's org
 name: Exclusion — blocked users lose access
 
 model_file: ./fga.mod
 
+# GIVEN (every test) project:roadmap in org:acme with list:backlog and
+# task:spec under it. alice owns the project and is blocked on it; bob
+# contributes and is blocked in org:acme; carol views and isn't blocked.
+# dana owns the list and tom owns the task: both are blocked (on the project
+# and in the org). gina follows the task. team:design contributes; dee, in
+# that team, is blocked on the project. olivia is acme's admin and blocked in
+# it.
+#
+# Folders: folder:eng is in org:acme and folder:eng-docs sits inside it with
+# no org of its own. project:wiki is in folder:eng-docs and has no org. ed
+# edits folder:eng and is blocked in org:acme; vic views folder:eng.
 tuples:
   - { user: org:acme, relation: org, object: project:roadmap }
   - { user: user:alice, relation: owner, object: project:roadmap }
@@ -11,46 +22,148 @@ tuples:
   - { user: user:bob, relation: blocked, object: org:acme }
   - { user: user:carol, relation: viewer, object: project:roadmap }
   - { user: project:roadmap, relation: project, object: list:backlog }
+  - { user: list:backlog, relation: list, object: task:spec }
+  - { user: user:dana, relation: owner, object: list:backlog }
+  - { user: user:dana, relation: blocked, object: project:roadmap }
+  - { user: user:tom, relation: owner, object: task:spec }
+  - { user: user:tom, relation: blocked, object: org:acme }
+  - { user: user:gina, relation: follower, object: task:spec }
+  - { user: team:design#member, relation: contributor, object: project:roadmap }
+  - { user: user:dee, relation: member, object: team:design }
+  - { user: user:dee, relation: blocked, object: project:roadmap }
+  - { user: user:olivia, relation: admin, object: org:acme }
+  - { user: user:olivia, relation: blocked, object: org:acme }
+  - { user: org:acme, relation: org, object: folder:eng }
+  - { user: folder:eng, relation: parent, object: folder:eng-docs }
+  - { user: folder:eng-docs, relation: folder, object: project:wiki }
+  - { user: user:ed, relation: editor, object: folder:eng }
+  - { user: user:ed, relation: blocked, object: org:acme }
+  - { user: user:vic, relation: viewer, object: folder:eng }
 
 tests:
-  - name: Blocked on the project removes edit and view, even for the owner
+  # --- on the project ------------------------------------------------------------
+
+  - name: a blocked owner should lose edit and view but keep can_manage
+    # WHEN  checking alice, owner of and blocked on project:roadmap
+    # THEN  she can't edit or view it, but can still manage it (e.g. to unblock)
     check:
       - user: user:alice
         object: project:roadmap
+        assertions: { owner: true, blocked: true, is_blocked: true, can_edit: false, can_view: false, can_manage: true }
+
+  - name: a contributor blocked in the org should lose access to the org's projects
+    # WHEN  checking bob, a contributor blocked in org:acme
+    # THEN  he is blocked on the project (through the org) and can't edit or view
+    check:
+      - user: user:bob
+        object: project:roadmap
+        assertions: { contributor: true, blocked: false, is_blocked: true, can_edit: false, can_view: false }
+
+  - name: a member of a contributing team should lose access when blocked
+    # WHEN  checking dee, who contributes through team:design and is blocked
+    # THEN  she can't edit or view, and isn't listed as an editor
+    check:
+      - user: user:dee
+        object: project:roadmap
+        assertions: { contributor: true, can_edit: false, can_view: false }
+    list_users:
+      - object: project:roadmap
+        user_filter: [{ type: user }]
         assertions:
-          owner: true
-          blocked: true
-          can_edit: false
-          can_view: false
-          # can_manage is not excluded: an owner can still manage (e.g. unblock).
-          can_manage: true
+          can_edit: { users: [] }
 
-  - name: Blocked in the org removes access to the org's projects
+  - name: an org admin blocked in the org should lose edit, view and share but keep can_manage
+    # WHEN  checking olivia, acme's admin, who is also blocked in acme
+    # THEN  she can't edit, view or share, but can still manage
     check:
-      - user: user:bob
+      - user: user:olivia
         object: project:roadmap
-        assertions: { contributor: true, blocked: false, can_edit: false, can_view: false }
+        assertions: { can_manage: true, can_edit: false, can_view: false, can_share: false }
 
-  - name: Blocks also apply to everything inherited from the project
-    check:
-      - user: user:alice
-        object: list:backlog
-        assertions: { can_view: false, can_edit: false }
-      - user: user:bob
-        object: list:backlog
-        assertions: { can_view: false }
-      - user: user:carol
-        object: list:backlog
-        assertions: { can_view: true }
-
-  - name: Not blocked keeps access
+  - name: a user who isn't blocked should keep access
+    # WHEN  checking carol, a viewer with no block
+    # THEN  she isn't blocked and can view; she is the only listed viewer
     check:
       - user: user:carol
         object: project:roadmap
-        assertions: { blocked: false, can_view: true }
+        assertions: { blocked: false, is_blocked: false, can_view: true }
     list_users:
       - object: project:roadmap
         user_filter: [{ type: user }]
         assertions:
           can_view: { users: [user:carol] }
-          blocked: { users: [user:alice] }
+          blocked: { users: [user:alice, user:dana, user:dee] }
+
+  # --- lists and tasks under the project ---------------------------------------
+
+  - name: a block should also apply to access inherited by the project's lists
+    # WHEN  checking alice and bob on list:backlog
+    # THEN  neither can view or edit it, though both have project roles
+    check:
+      - user: user:alice
+        object: list:backlog
+        assertions: { is_blocked: true, can_view: false, can_edit: false }
+      - user: user:bob
+        object: list:backlog
+        assertions: { is_blocked: true, can_view: false }
+
+  - name: a block on the project should override a direct list grant
+    # WHEN  checking dana, owner of list:backlog and blocked on its project
+    # THEN  she still owns it but can't view, edit or share it
+    check:
+      - user: user:dana
+        object: list:backlog
+        assertions: { owner: true, is_blocked: true, can_view: false, can_edit: false, can_share: false }
+
+  - name: a block in the org should override a direct task grant
+    # WHEN  checking tom, owner of task:spec and blocked in org:acme
+    # THEN  he still owns it but can't view, edit, complete or comment on it
+    check:
+      - user: user:tom
+        object: task:spec
+        assertions: { owner: true, is_blocked: true, can_view: false, can_edit: false, can_complete: false, can_comment: false }
+
+  - name: a user who isn't blocked should keep list and task access
+    # WHEN  checking carol on the list and gina, a follower, on the task
+    # THEN  both keep access, and neither is blocked
+    check:
+      - user: user:carol
+        object: list:backlog
+        assertions: { is_blocked: false, can_view: true }
+      - user: user:gina
+        object: task:spec
+        assertions: { is_blocked: false, can_view: true, can_comment: true }
+
+  # --- through the folder's org ----------------------------------------------
+
+  - name: a block in a folder's org should reach its sub-folders
+    # WHEN  checking ed (blocked in org:acme) and vic (not blocked) on the folders
+    # THEN  ed is blocked in folder:eng and in folder:eng-docs, which has no org
+    #       of its own; vic is blocked in neither
+    check:
+      - user: user:ed
+        object: folder:eng
+        assertions: { blocked_in_org: true }
+      - user: user:ed
+        object: folder:eng-docs
+        assertions: { blocked_in_org: true }
+      - user: user:vic
+        object: folder:eng-docs
+        assertions: { blocked_in_org: false }
+
+  - name: a block in the folder's org should apply to a project without an org
+    # WHEN  checking ed, an editor of folder:eng blocked in its org, on
+    #       project:wiki (inside folder:eng-docs, no org tuple)
+    # THEN  he is blocked on the project and can't edit or view it
+    check:
+      - user: user:ed
+        object: project:wiki
+        assertions: { is_blocked: true, can_edit: false, can_view: false }
+
+  - name: a folder viewer who isn't blocked should keep access to projects inside
+    # WHEN  checking vic on project:wiki
+    # THEN  she isn't blocked and can view it
+    check:
+      - user: user:vic
+        object: project:wiki
+        assertions: { is_blocked: false, can_view: true }

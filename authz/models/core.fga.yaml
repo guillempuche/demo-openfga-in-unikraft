@@ -4,21 +4,63 @@ name: Core — organizations and nested teams
 model_file: ./fga.mod
 
 tests:
-  - name: Org admins are members; blocked users are only blocked
+  # --- organizations ---------------------------------------------------------
+
+  - name: an org admin should also be an org member
+    # GIVEN olivia is an admin of org:acme
+    # WHEN  checking her org relations
+    # THEN  she is an admin and a member, and not blocked
     tuples:
       - { user: user:olivia, relation: admin, object: org:acme }
-      - { user: user:mark, relation: member, object: org:acme }
-      - { user: user:bea, relation: blocked, object: org:acme }
     check:
       - user: user:olivia
         object: org:acme
         assertions: { admin: true, member: true, blocked: false }
+
+  - name: a plain org member should not be an admin
+    # GIVEN mark is a member of org:acme
+    # WHEN  checking his org relations
+    # THEN  he is a member but not an admin
+    tuples:
+      - { user: user:mark, relation: member, object: org:acme }
+    check:
       - user: user:mark
         object: org:acme
         assertions: { admin: false, member: true, blocked: false }
+
+  - name: a blocked user should not become an org member
+    # GIVEN bea is only blocked in org:acme
+    # WHEN  checking her org relations
+    # THEN  she is blocked, and neither a member nor an admin
+    tuples:
+      - { user: user:bea, relation: blocked, object: org:acme }
+    check:
       - user: user:bea
         object: org:acme
         assertions: { admin: false, member: false, blocked: true }
+
+  - name: an org-blocked member should stay an org member
+    # GIVEN mark is a member of org:acme AND blocked in it
+    # WHEN  checking his org relations
+    # THEN  he is still a member: blocks act on the org's projects (see
+    #       exclusion.fga.yaml), not on membership itself
+    tuples:
+      - { user: user:mark, relation: member, object: org:acme }
+      - { user: user:mark, relation: blocked, object: org:acme }
+    check:
+      - user: user:mark
+        object: org:acme
+        assertions: { member: true, blocked: true }
+
+  - name: listing an org should return its members and admins
+    # GIVEN olivia is an admin, mark a member and bea blocked in org:acme
+    # WHEN  listing org:acme's members and admins, and mark's orgs
+    # THEN  members are olivia and mark, the admin is olivia, and mark is a
+    #       member of org:acme only
+    tuples:
+      - { user: user:olivia, relation: admin, object: org:acme }
+      - { user: user:mark, relation: member, object: org:acme }
+      - { user: user:bea, relation: blocked, object: org:acme }
     list_objects:
       - user: user:mark
         type: org
@@ -32,8 +74,14 @@ tests:
           member: { users: [user:olivia, user:mark] }
           admin: { users: [user:olivia] }
 
-  - name: Members of a sub-team are members of the parent team
-    tuples:
+  # --- nested teams ----------------------------------------------------------
+  # GIVEN (every test below) team:sre ⊂ team:infra ⊂ team:platform, with ian in
+  #       infra, sam in sre and tess maintaining platform.
+
+  - name: a member of a sub-team should be a member of the parent team
+    # WHEN  checking ian (team:infra) on team:platform
+    # THEN  he is a member, not a maintainer
+    tuples: &teams
       - { user: org:acme, relation: org, object: team:platform }
       - { user: user:tess, relation: maintainer, object: team:platform }
       - { user: team:infra#member, relation: member, object: team:platform }
@@ -44,26 +92,68 @@ tests:
       - user: user:ian
         object: team:platform
         assertions: { member: true, maintainer: false }
+
+  - name: a member two levels down should be a member of every team above
+    # WHEN  checking sam (team:sre) on team:platform, and listing his teams
+    # THEN  he is a member of sre, infra and platform
+    tuples: *teams
+    check:
       - user: user:sam
         object: team:platform
         assertions: { member: true }
+    list_objects:
+      - user: user:sam
+        type: team
+        assertions:
+          member: [team:sre, team:infra, team:platform]
+
+  - name: a maintainer should be a member of their team
+    # WHEN  checking tess on team:platform
+    # THEN  she is a maintainer and a member
+    tuples: *teams
+    check:
       - user: user:tess
         object: team:platform
         assertions: { member: true, maintainer: true }
+
+  - name: a sub-team maintainer should be a member of the parent team
+    # AND   max maintains team:sre
+    # WHEN  checking max on team:platform
+    # THEN  he is a member of team:platform, not its maintainer
+    tuples:
+      - { user: team:infra#member, relation: member, object: team:platform }
+      - { user: team:sre#member, relation: member, object: team:infra }
+      - { user: user:max, relation: maintainer, object: team:sre }
+    check:
+      - user: user:max
+        object: team:platform
+        assertions: { member: true, maintainer: false }
+
+  - name: an outsider should not be a team member
+    # WHEN  checking mark, who is in no team
+    # THEN  he is not a member of team:platform
+    tuples: *teams
+    check:
       - user: user:mark
         object: team:platform
         assertions: { member: false }
+
+  - name: a team should point at its org only
+    # WHEN  checking team:platform's org
+    # THEN  it is org:acme, not org:globex
+    tuples: *teams
+    check:
       - user: org:acme
         object: team:platform
         assertions: { org: true }
       - user: org:globex
         object: team:platform
         assertions: { org: false }
-    list_objects:
-      - user: user:sam
-        type: team
-        assertions:
-          member: [team:sre, team:infra, team:platform]
+
+  - name: listing a team should return direct and nested members and sub-teams
+    # WHEN  listing team:platform's members as users and as team usersets
+    # THEN  users are tess, ian and sam; usersets are platform, infra and sre
+    tuples: *teams
     list_users:
       - object: team:platform
         user_filter: [{ type: user }]
@@ -73,3 +163,19 @@ tests:
         user_filter: [{ type: team, relation: member }]
         assertions:
           member: { users: [team:platform#member, team:infra#member, team:sre#member] }
+
+  - name: a membership cycle between teams should resolve without granting outsiders
+    # GIVEN team:a and team:b include each other's members, and ian is in team:a
+    # WHEN  checking ian and mallory on team:b
+    # THEN  ian is a member, mallory isn't, and the cycle doesn't error
+    tuples:
+      - { user: team:a#member, relation: member, object: team:b }
+      - { user: team:b#member, relation: member, object: team:a }
+      - { user: user:ian, relation: member, object: team:a }
+    check:
+      - user: user:ian
+        object: team:b
+        assertions: { member: true }
+      - user: user:mallory
+        object: team:b
+        assertions: { member: false }
