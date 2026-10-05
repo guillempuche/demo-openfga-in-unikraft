@@ -8,7 +8,9 @@ YAML files claim, and fails when:
 2. an object type lacks a passing list_objects or list_users assertion;
 3. a mutant of the model survives: the model is broken one rule at a time
    (drop a branch of `or`, turn `and` into `or`, drop `but not`, drop an
-   allowed subject type, negate a condition) and the tests must fail for each.
+   allowed subject type, negate a condition, move a condition's boundary
+   (`<` <-> `<=`, `>` <-> `>=`, `==` <-> `!=`), drop one side of a condition's
+   `&&`/`||`) and the tests must fail for each.
    A surviving mutant means some rule isn't really tested.
 
 Mutants listed in authz/models/coverage-exemptions.txt (one id per line,
@@ -25,6 +27,7 @@ import copy
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -163,6 +166,49 @@ def type_ref(r: dict) -> str:
     return s
 
 
+# Comparison operators and the boundary mutant of each.
+FLIP = {"<=": "<", "<": "<=", ">=": ">", ">": ">=", "==": "!=", "!=": "=="}
+COMPARISON = re.compile(r"<=|>=|==|!=|<|>")
+
+
+def top_level_split(expr: str, op: str) -> list[str]:
+    """Split a CEL expression on `op` outside parentheses, brackets and quotes."""
+    parts, depth, quote, start, i = [], 0, None, 0, 0
+    while i < len(expr):
+        c = expr[i]
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "\"'":
+            quote = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif depth == 0 and expr.startswith(op, i):
+            parts.append(expr[start:i].strip())
+            i += len(op)
+            start = i
+            continue
+        i += 1
+    parts.append(expr[start:].strip())
+    return parts
+
+
+def condition_mutants(expr: str):
+    """Yield (description, expression) for every boundary and operand break of a condition."""
+    yield "negated", f"!({expr})"
+    for m in COMPARISON.finditer(expr):
+        flipped = expr[: m.start()] + FLIP[m.group()] + expr[m.end():]
+        yield f"'{m.group()}' -> '{FLIP[m.group()]}' at {m.start()}", flipped
+    for op in ("&&", "||"):
+        parts = top_level_split(expr, op)
+        if len(parts) > 1:
+            for i, part in enumerate(parts):
+                rest = parts[:i] + parts[i + 1:]
+                yield f"drop '{op}' operand {i} ({part})", f" {op} ".join(rest)
+
+
 def mutants(model: dict):
     """Yield (id, mutated model) for every single-rule break of the model."""
     for ti, td in enumerate(model["type_definitions"]):
@@ -184,9 +230,10 @@ def mutants(model: dict):
                     del lst[i]
                     yield f"{base}: drop allowed type [{type_ref(r)}]", m
     for name, cond in (model.get("conditions") or {}).items():
-        m = copy.deepcopy(model)
-        m["conditions"][name]["expression"] = f"!({cond['expression']})"
-        yield f"condition {name}: negated", m
+        for desc, expr in condition_mutants(cond["expression"].strip()):
+            m = copy.deepcopy(model)
+            m["conditions"][name]["expression"] = expr
+            yield f"condition {name}: {desc}", m
 
 
 def run_mutant(item, test_files: list[str]) -> tuple[str, str]:
