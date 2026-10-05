@@ -1,0 +1,136 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Dependency updates. OpenFGA server and fga CLI pins move together in one PR (scripts/check-versions.sh fails otherwise).",
+  "extends": [
+    "config:recommended"
+  ],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "docs/repos/**"
+  ],
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "timezone": "Europe/Madrid",
+  "minimumReleaseAge": "3 days",
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "",
+  "customManagers": [
+    {
+      "description": "OpenFGA server: versions.env and the unikernel Dockerfile (compose files use the docker-compose manager)",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^versions\\.env$/",
+        "/^infrastructure/unikraft/openfga/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "OPENFGA_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "openfga/openfga"
+    },
+    {
+      "description": "fga CLI: versions.env, CI and flake.nix",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^versions\\.env$/",
+        "/^\\.github/workflows/ci\\.yml$/",
+        "/^flake\\.nix$/"
+      ],
+      "matchStrings": [
+        "FGA_CLI_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "FGA_VERSION: (?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "fgaVersion = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\";"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "openfga/cli",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "description": "grpcurl in CI",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/ci\\.yml$/"
+      ],
+      "matchStrings": [
+        "GRPCURL_VERSION: (?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "fullstorydev/grpcurl",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "description": "PostgreSQL compiled into the unikernel",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^infrastructure/unikraft/postgres/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "ENV PG_VERSION=(?<currentValue>\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "postgres",
+      "versioningTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchFileNames": [
+        "api/**"
+      ],
+      "semanticCommitScope": "api"
+    },
+    {
+      "matchFileNames": [
+        "authz/**",
+        "tests/integration/**"
+      ],
+      "semanticCommitScope": "authz"
+    },
+    {
+      "matchFileNames": [
+        "infrastructure/**"
+      ],
+      "semanticCommitScope": "infra"
+    },
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "semanticCommitType": "cicd",
+      "semanticCommitScope": ""
+    },
+    {
+      "description": "Server and CLI pins must match (the CLI embeds the server for fga model test); one PR, no scope since it spans several",
+      "matchDepNames": [
+        "openfga/openfga",
+        "openfga/cli"
+      ],
+      "groupName": "OpenFGA",
+      "semanticCommitScope": "",
+      "prBodyNotes": [
+        "Before merging: update the vendored sources with `git subtree pull --squash` (see `docs/repos/README.md`); for a new fga CLI, update the `sha256` hashes in `flake.nix`; then run `./scripts/check-versions.sh`, the model tests and the integration suite. The fga CLI release must embed the same OpenFGA version as the server."
+      ]
+    },
+    {
+      "matchPackageNames": [
+        "effect",
+        "@effect/**"
+      ],
+      "groupName": "Effect"
+    },
+    {
+      "description": "A PostgreSQL major upgrade needs a data migration; Node majors change engines and CI. Do these by hand.",
+      "matchPackageNames": [
+        "postgres",
+        "node",
+        "@types/node"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    }
+  ]
+}
