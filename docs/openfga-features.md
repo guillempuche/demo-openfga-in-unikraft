@@ -107,7 +107,7 @@ Owners of a folder, or of any folder above it, manage the projects inside (`proj
 
 OpenFGA stops runaway recursion: on a cold cache, a check that has to resolve 25 levels fails with `authorization_model_resolution_too_complex` (24 levels resolve). Once shallower answers are cached, deeper checks can succeed. `ListObjects` isn't limited the same way.
 
-Tests: [nesting.fga.yaml](../authz/models/nesting.fga.yaml), "a folder owner should manage, edit and share projects in any sub-folder", "folder access should carry on to the project's lists and tasks"; integration, "[rpc:Check] resolves deep nesting but stops runaway recursion".
+Tests: [nesting.fga.yaml](../authz/models/nesting.fga.yaml), "a folder owner should manage, edit and share projects in any sub-folder", "folder access should carry on to the project's lists and tasks"; integration, "[rpc:Check] should stop runaway recursion at 25 levels with a cold cache", "[rpc:Check] should resolve 24 levels".
 
 ### Exclusion (`but not`)
 
@@ -134,7 +134,7 @@ Tests: [exclusion.fga.yaml](../authz/models/exclusion.fga.yaml), "a blocked owne
 define can_share: can_edit and member from org
 ```
 
-Tests: [intersection.fga.yaml](../authz/models/intersection.fga.yaml), "an editor who is an org member should share the project", "an editor who isn't an org member should not share the project", "an org member who can't edit should not share the project". The integration suite also has a regression test for a ListUsers bug with this shape, "[rpc:ListUsers] never returns a blocked user (regression, CVE-2026-61709: wildcard + and + but not)".
+Tests: [intersection.fga.yaml](../authz/models/intersection.fga.yaml), "an editor who is an org member should share the project", "an editor who isn't an org member should not share the project", "an org member who can't edit should not share the project". The integration suite also has a regression test for a ListUsers bug with this shape, "[rpc:ListUsers] should never return a blocked user (regression, CVE-2026-61709: wildcard + and + but not)".
 
 ### Public access (`user:*`)
 
@@ -189,7 +189,7 @@ await fga.check({ user: 'user:remy', relation: 'can_edit', object: 'project:road
 
 A check, ListObjects or ListUsers that reaches a condition without all of its parameters fails with a validation error. It does not answer `false`, so send the context for every condition the query can reach. Parameters stored on the tuple win over the same names in the request: sending `office_cidr: "0.0.0.0/0"` can't widen remy's grant.
 
-Tests: [conditions.fga.yaml](../authz/models/conditions.fga.yaml), "a team's temporary folder access should start exactly at grant_time", "… should end exactly at grant_time plus duration", "the office network should include both ends of its CIDR range", "nobody should export when the plan doesn't mention the feature", "a request should not be able to widen the network stored on the grant", "a team's temporary folder access should reach sub-folders, projects, lists and tasks while live"; integration, "[rpc:Check] evaluates conditions with request context, also with the check cache on (regression, v1.13.1)", "[rpc:Check] fails when a condition is missing its context", "[rpc:ListObjects] fails when a reachable condition is missing its context", "[rpc:ListUsers] fails when a reachable condition is missing its context". Docs: [Conditions](https://openfga.dev/docs/modeling/conditions).
+Tests: [conditions.fga.yaml](../authz/models/conditions.fga.yaml), "a team's temporary folder access should start exactly at grant_time", "… should end exactly at grant_time plus duration", "the office network should include both ends of its CIDR range", "nobody should export when the plan doesn't mention the feature", "a request should not be able to widen the network stored on the grant", "a team's temporary folder access should reach sub-folders, projects, lists and tasks while live"; integration, "[rpc:Check] should not reuse a cached answer across contexts (regression, v1.13.1)", "[rpc:Check] should keep the tuple's stored context over the same parameter in the request", "[rpc:Check] should fail when the condition is missing its context", "[rpc:ListObjects] should fail when the condition is missing its context", "[rpc:ListUsers] should fail when a reachable condition is missing its context". Docs: [Conditions](https://openfga.dev/docs/modeling/conditions).
 
 ### Modular models and `extend type`
 
@@ -270,7 +270,7 @@ await fga.check({ user: 'user:late', relation: 'viewer', object: 'project:consis
 
 Demo API: `GET /check?user=&relation=&object=[&consistency=HIGHER_CONSISTENCY]`.
 
-Tests: "[rpc:Check] answers from stored tuples, through inheritance and exclusion", "[rpc:Check] uses contextual tuples without storing them", "[rpc:Check] HIGHER_CONSISTENCY sees a write immediately", "[rpc:Check] pins a model id; an unknown id is rejected", "[rpc:Check] rejects more than 100 contextual tuples", "[rpc:Check] answers over gRPC like over HTTP".
+Tests: "[rpc:Check] should let an owner who is an org member share the project", "[rpc:Check] should allow through a contextual tuple", "[rpc:Check] should not store the contextual tuple", "[rpc:Check] should see a write made after a cached denial", "[rpc:Check] should see a revocation made after a cached approval", "[rpc:Check] should answer with that model", "[rpc:Check] should reject an unknown model id", "[rpc:Check] should reject more than 100 contextual tuples", "[rpc:Check] should answer over gRPC like over HTTP".
 
 ### BatchCheck
 
@@ -288,7 +288,7 @@ const res = await fga.batchCheck({
 
 The client splits large batches itself. OpenFGA rejects a request with duplicate correlation IDs or more than 50 checks.
 
-Demo API: `POST /batch-check`. Tests: "[rpc:BatchCheck] answers many checks in one call, keyed by correlation id", "[rpc:BatchCheck] rejects duplicate correlation ids and more than 50 checks".
+Demo API: `POST /batch-check`. Tests: "[rpc:BatchCheck] should answer each check under its correlation id", "[rpc:BatchCheck] should report the error on that item and answer the others", "[rpc:BatchCheck] should reject duplicate correlation ids", "[rpc:BatchCheck] should reject more than 50 checks".
 
 ### ListObjects and StreamedListObjects
 
@@ -302,7 +302,7 @@ for await (const item of fga.streamedListObjects({ user: 'user:alice', relation:
 }
 ```
 
-Demo API: `GET /list-objects?user=&relation=&type=`. Tests: "[rpc:ListObjects] lists objects a user can reach", "[rpc:ListObjects] includes public objects and honours context", "[rpc:StreamedListObjects] streams the same objects as ListObjects".
+Demo API: `GET /list-objects?user=&relation=&type=`. Tests: "[rpc:ListObjects] should list the projects a contributor can edit", "[rpc:ListObjects] should include public objects for any user", "[rpc:StreamedListObjects] should stream the same objects as ListObjects".
 
 ### ListUsers
 
@@ -318,7 +318,7 @@ const { users } = await fga.listUsers({
 // [{ object: { type: 'user', id: 'alice' } }, ...]; a public grant comes back as { wildcard: { type: 'user' } }
 ```
 
-Tests: "[rpc:ListUsers] lists users, wildcards and usersets", "[rpc:ListUsers] accepts only one user filter".
+Tests: "[rpc:ListUsers] should list direct, inherited and conditional editors", "[rpc:ListUsers] should return the wildcard for a public project", "[rpc:ListUsers] should accept only one user filter".
 
 ### Expand
 
@@ -329,7 +329,7 @@ const { tree } = await fga.expand({ relation: 'member', object: 'project:roadmap
 // tree.root.union.nodes: owner, contributor, viewer
 ```
 
-Tests: "[rpc:Expand] returns the userset tree for a relation".
+Tests: "[rpc:Expand] should return a union node with one branch per relation", "[rpc:Expand] should return a difference whose base reaches the project folder".
 
 ### Write, Read and ReadChanges
 
@@ -346,7 +346,7 @@ await fga.readChanges({ type: 'task', startTime })                              
 
 One Write request is all or nothing, with at most 100 tuples. By default, writing an existing tuple or deleting a missing one fails; you can ask OpenFGA to ignore those instead. `startTime` is compared with the server's clock, so take it from a server timestamp rather than from the client.
 
-Tests: "[rpc:Write] writes tuples, including one with a condition, and Read returns them", "[rpc:Write] rejects duplicate writes by default and ignores them on request", "[rpc:Write] rejects a tuple the model does not allow", "[rpc:Write] rejects more than 100 tuples in one request", "[rpc:Read] pages with page_size and continuation tokens", "[rpc:ReadChanges] start_time excludes earlier changes; pages with continuation tokens".
+Tests: "[rpc:Write] should store a conditional tuple with its condition name and context", "[rpc:Write] should reject the duplicate by default", "[rpc:Write] should accept the duplicate with on_duplicate ignore", "[rpc:Write] should reject a user type the relation does not allow", "[rpc:Write] should write nothing when one tuple of the batch is invalid", "[rpc:Write] should reject more than 100 tuples in one request", "[rpc:Read] should return page_size tuples and a continuation token for the rest", "[rpc:ReadChanges] should exclude changes before it".
 
 ### Stores, models and assertions
 
@@ -360,7 +360,7 @@ Tests: the `[rpc:CreateStore]`, `[rpc:GetStore]`, `[rpc:ListStores]`, `[rpc:Dele
 
 OpenFGA v1.21 implements the [AuthZEN](https://openid.github.io/authzen/) authorization API behind the `authzen` experimental flag. Evaluation maps subject, action and resource onto a Check; the search endpoints map onto ListUsers and ListObjects. The local and CI stacks turn the flag on; the Unikraft deployment doesn't.
 
-Tests: "[rpc:Evaluation] maps subject/action/resource onto a Check", "[rpc:Evaluations] evaluates a batch with shared defaults", "[rpc:SubjectSearch] finds who can do something (like ListUsers)", "[rpc:ResourceSearch] finds what a subject can reach (like ListObjects)", "[rpc:ActionSearch] lists the actions a subject may take on a resource", "[rpc:GetConfiguration] publishes AuthZEN discovery metadata". The same flag set also enables inline `$expression` conditions: "[rpc:Write] a tuple carries its own CEL expression; Check evaluates it".
+Tests: "[rpc:Evaluation] should decide true when the Check behind it allows", "[rpc:Evaluations] should decide each action in order", "[rpc:SubjectSearch] should find the subjects allowed an action (like ListUsers)", "[rpc:ResourceSearch] should find the resources a subject can reach (like ListObjects)", "[rpc:ActionSearch] should include an action the subject may take", "[rpc:GetConfiguration] should publish the per-store policy decision point and endpoints". The same flag set also enables inline `$expression` conditions: "[rpc:Write] should store a tuple that carries its own CEL expression".
 
 ## Operating OpenFGA
 
@@ -368,21 +368,21 @@ Tests: "[rpc:Evaluation] maps subject/action/resource onto a Check", "[rpc:Evalu
 
 With `OPENFGA_AUTHN_METHOD=preshared`, every HTTP and gRPC call needs `Authorization: Bearer <key>`; health checks and Prometheus metrics don't. The Playground needs authentication off (`none`), so it runs only in the local optional profile.
 
-Tests: "[rpc:ListStores] rejects requests without a key (401)", "[rpc:Check] rejects a wrong key (401) and accepts the right one", "health checks need no key", "Prometheus metrics count requests per gRPC method and code (no key needed)".
+Tests: "[rpc:ListStores] should answer 401 bearer_token_missing", "[rpc:Check] should answer 401", "[rpc:Check] should answer the check", "should answer SERVING without a key", "should count requests per gRPC method and code".
 
 ### The check cache and consistency
 
 With `OPENFGA_CHECK_QUERY_CACHE_ENABLED=true` (the Unikraft deployment turns it on), OpenFGA reuses Check answers for `OPENFGA_CHECK_QUERY_CACHE_TTL`, 10 s by default. A Check right after a write can return the old answer; on Unikraft it did (see [RESULTS.md](RESULTS.md)). Pass `consistency: HIGHER_CONSISTENCY` for reads that must see a write, and keep the default, `MINIMIZE_LATENCY`, for everything else.
 
-Tests: "[rpc:Check] HIGHER_CONSISTENCY sees a write immediately"; [`scripts/check-e2e.sh`](../scripts/check-e2e.sh) does the same through the public API on Unikraft.
+Tests: "[rpc:Check] should see a write made after a cached denial", "[rpc:Check] should see a revocation made after a cached approval"; [`scripts/check-e2e.sh`](../scripts/check-e2e.sh) does the same through the public API on Unikraft.
 
 ### Limits
 
 | Limit | Value | Test |
 | --- | --- | --- |
-| Tuples per Write | 100 | "[rpc:Write] rejects more than 100 tuples in one request" |
-| Checks per BatchCheck | 50 | "[rpc:BatchCheck] rejects duplicate correlation ids and more than 50 checks" |
-| Contextual tuples per request | 100 | "[rpc:Check] rejects more than 100 contextual tuples" |
-| Page size (Read and others) | 100 | "[rpc:Read] rejects a page size over 100" |
-| `user_filters` per ListUsers | 1 | "[rpc:ListUsers] accepts only one user filter" |
-| Resolution depth (cold cache) | 25 levels fail, 24 resolve | "[rpc:Check] resolves deep nesting but stops runaway recursion" |
+| Tuples per Write | 100 | "[rpc:Write] should reject more than 100 tuples in one request" |
+| Checks per BatchCheck | 50 | "[rpc:BatchCheck] should reject duplicate correlation ids", "[rpc:BatchCheck] should reject more than 50 checks" |
+| Contextual tuples per request | 100 | "[rpc:Check] should reject more than 100 contextual tuples" |
+| Page size (Read and others) | 100 | "[rpc:Read] should reject a page size over 100" |
+| `user_filters` per ListUsers | 1 | "[rpc:ListUsers] should accept only one user filter" |
+| Resolution depth (cold cache) | 25 levels fail, 24 resolve | "[rpc:Check] should stop runaway recursion at 25 levels with a cold cache", "[rpc:Check] should resolve 24 levels" |

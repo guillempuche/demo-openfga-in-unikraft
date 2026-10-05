@@ -391,21 +391,21 @@ To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<n
 
 ## Integration tests: every OpenFGA RPC
 
-[`tests/integration/`](tests/integration/) uses the official [`@openfga/sdk`](https://github.com/openfga/js-sdk) against a real OpenFGA (stored tuples in PostgreSQL, not contextual tuples) and covers every RPC in the API definition:
+[`tests/integration/`](tests/integration/) uses the official [`@openfga/sdk`](https://github.com/openfga/js-sdk) against a real OpenFGA, with tuples stored in PostgreSQL (and contextual tuples where a test is about them). It covers every RPC in the API definition in 151 BDD-style tests (`[rpc:<Name>] should …`, GIVEN/WHEN/THEN comments, one behaviour each):
 
 | Area | RPCs | Also covered |
 | --- | --- | --- |
 | Stores | CreateStore, GetStore, ListStores, DeleteStore, UpdateStore (not implemented: asserts `Unimplemented` over gRPC) | name filter, pagination, deleted stores |
-| Models | WriteAuthorizationModel, ReadAuthorizationModel, ReadAuthorizationModels | invalid models, newest-first paging |
-| Tuples | Write, Read, ReadChanges | conditions, duplicate/missing handling, 100-tuple limit, partial keys, type filter, `start_time` |
-| Queries | Check, BatchCheck, Expand, ListObjects, StreamedListObjects, ListUsers | contextual tuples, context, consistency modes with the check cache on, model pinning, 50-check and 100-contextual-tuple limits, recursion limit, missing-context errors |
-| Assertions | WriteAssertions, ReadAssertions | contextual tuples and context |
+| Models | WriteAuthorizationModel, ReadAuthorizationModel, ReadAuthorizationModels | invalid models, newest-first paging, store isolation, an older pinned model answering differently from the latest |
+| Tuples | Write, Read, ReadChanges | conditions, duplicate/missing handling, a batch with one bad tuple writing nothing, 409 for the same key with another condition, 100-tuple limit, partial keys, type filter, `start_time`, resuming an exhausted feed, conditional deletes |
+| Queries | Check, BatchCheck, Expand, ListObjects, StreamedListObjects, ListUsers | contextual tuples (plain and conditional) on every query, context (stored context wins over the request's, mistyped values fail), consistency modes with the check cache on (grant and revocation), per-item BatchCheck errors, model pinning, 50-check and 100-contextual-tuple limits, recursion limit, missing-context errors, truncation at max results |
+| Assertions | WriteAssertions, ReadAssertions | contextual tuples and context, unknown model ids, models without assertions |
 | Security | — | HTTP and gRPC without a key or with a wrong key, health and metrics without a key |
 | Regressions | — | fixed advisories: conditions with the check cache, duplicate BatchCheck items, conditions on the wrong grant type, ListUsers with `user:*` + `and` + `but not` (CVE-2026-61709) |
 | Experimental (local/CI only) | AuthZEN: Evaluation, Evaluations, SubjectSearch, ResourceSearch, ActionSearch, GetConfiguration | inline `$expression` conditions |
 
 ```bash
-docker compose -f tests/integration/docker-compose.yaml up -d --wait   # OpenFGA v1.21.0 + PostgreSQL 16, experimental tier on
+docker compose -f tests/integration/docker-compose.yaml up -d --wait   # OpenFGA v1.21.0 + PostgreSQL 16, experimental tier on, list max results 100
 (cd tests/integration && npm ci)
 python3 scripts/check-api-coverage.py                                  # runs the suite + the API coverage gate
 ```
