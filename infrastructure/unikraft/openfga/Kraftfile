@@ -13,5 +13,19 @@ rootfs:
 
 cmd: ["/usr/bin/openfga", "run"]
 
-# Runtime settings (memory, env, scale-to-zero, no public port) are passed to
-# `unikraft run`; see scripts/deploy.sh.
+# Safe defaults baked into the image, so even a manual `unikraft run` without
+# scripts/deploy.sh can't start an open server: no datastore URI means an
+# error rather than an in-memory store, and no preshared keys means a refusal
+# to start. Non-secrets only (the image config is readable by anyone with
+# registry access; scripts/check-kraftfiles.sh enforces it). Env passed at run
+# time overrides these by name.
+env:
+  OPENFGA_DATASTORE_ENGINE: postgres
+  OPENFGA_AUTHN_METHOD: preshared
+  OPENFGA_PLAYGROUND_ENABLED: "false"
+  OPENFGA_HTTP_ADDR: 0.0.0.0:8080
+  OPENFGA_LOG_FORMAT: json
+  OPENFGA_LOG_LEVEL: info
+
+# Secrets, tunables, memory, scale-to-zero and the private network are set by
+# scripts/deploy.sh.
