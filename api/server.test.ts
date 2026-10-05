@@ -148,6 +148,14 @@ describe('GET /check', () => {
     assert.equal(stub.lastCheckBody.authorization_model_id, MODEL)
   })
 
+  test('passes the consistency preference to OpenFGA', async () => {
+    await get('/check?user=user:a&relation=owner&object=project:x&consistency=HIGHER_CONSISTENCY')
+    assert.equal(stub.lastCheckBody.consistency, 'HIGHER_CONSISTENCY')
+    await get('/check?user=user:a&relation=owner&object=project:x')
+    assert.equal(stub.lastCheckBody.consistency, undefined)
+    assert.equal((await get('/check?user=user:a&relation=owner&object=project:x&consistency=STRONG')).status, 400)
+  })
+
   test('requires user, relation and object (400 with a JSON reason)', async () => {
     for (const path of ['/check?user=user:alice', '/check?user=&relation=r&object=o']) {
       const { status, body } = await get(path)

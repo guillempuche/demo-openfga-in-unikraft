@@ -21,6 +21,11 @@ export const HealthView = Schema.Struct({
   memoryMiB: Schema.Struct({ rss: Schema.Number, heapUsed: Schema.Number }),
 })
 
+// OpenFGA may answer a Check from its cache (on in the Unikraft deployment),
+// so right after a write it can return the old answer for up to the cache TTL.
+// HIGHER_CONSISTENCY skips the cache, for reads that must see a recent write.
+const Consistency = Schema.Literals(['MINIMIZE_LATENCY', 'HIGHER_CONSISTENCY'])
+
 export const CheckView = Schema.Struct({ ...TupleFields, allowed: Schema.Boolean, ms: Schema.Number })
 
 export const BatchCheckInput = Schema.Struct({
@@ -53,7 +58,7 @@ export const HealthGroup = HttpApiGroup.make('health').add(HttpApiEndpoint.get('
 export const AuthzGroup = HttpApiGroup.make('authz')
   .add(
     HttpApiEndpoint.get('check', '/check', {
-      query: TupleFields,
+      query: { ...TupleFields, consistency: Schema.optional(Consistency) },
       success: CheckView,
       error: [BadRequestError, UpstreamErrorError],
     }),

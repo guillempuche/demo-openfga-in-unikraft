@@ -42,8 +42,8 @@ export const AuthzLive = HttpApiBuilder.group(Api, 'authz', (handlers) =>
   Effect.gen(function* () {
     const fga = yield* OpenFga
     return handlers
-      .handle('check', ({ query }) =>
-        fga.check(query).pipe(Effect.map(({ allowed, ms }) => ({ ...query, allowed, ms: round(ms) }))),
+      .handle('check', ({ query: { consistency, ...tuple } }) =>
+        fga.check(tuple, { consistency }).pipe(Effect.map(({ allowed, ms }) => ({ ...tuple, allowed, ms: round(ms) }))),
       )
       .handle('batchCheck', ({ payload }) => fga.batchCheck(payload.checks).pipe(Effect.map((results) => ({ results }))))
       .handle('listObjects', ({ query }) =>

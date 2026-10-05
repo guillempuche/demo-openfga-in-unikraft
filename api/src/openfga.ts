@@ -138,11 +138,14 @@ export class OpenFga extends Context.Service<OpenFga>()('OpenFga', {
       )
     }
 
-    const check = (tuple: Tuple, context?: object) =>
+    const check = (tuple: Tuple, options: { readonly context?: object; readonly consistency?: string } = {}) =>
       Effect.gen(function* () {
         const started = performance.now()
         const res = yield* withTarget('check', (t, signal) =>
-          client.check({ ...tuple, context }, { storeId: t.storeId, authorizationModelId: t.modelId, signal } as any),
+          client.check(
+            { ...tuple, context: options.context },
+            { storeId: t.storeId, authorizationModelId: t.modelId, consistency: options.consistency, signal } as any,
+          ),
         )
         return { allowed: res.allowed === true, ms: performance.now() - started }
       })
