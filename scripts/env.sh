@@ -57,6 +57,9 @@ POSTGRES_IMAGE="$UNIKRAFT_ORG/${POSTGRES_NAME}:latest"
 OPENFGA_IMAGE="$UNIKRAFT_ORG/${OPENFGA_NAME}:latest"
 API_IMAGE="$UNIKRAFT_ORG/${API_NAME}:latest"
 FGA_STORE_NAME="${FGA_STORE_NAME:-demo-fga}"
+# ListObjects/ListUsers max results on the deployment (default 1000). The
+# integration suite needs at least 61 and tests the truncation at this value.
+FGA_LIST_MAX_RESULTS="${FGA_LIST_MAX_RESULTS:-100}"
 TUNNEL_PORT="${TUNNEL_PORT:-18080}"
 TUNNEL_GRPC_PORT="${TUNNEL_GRPC_PORT:-18081}"
 TUNNEL_METRICS_PORT="${TUNNEL_METRICS_PORT:-12112}"

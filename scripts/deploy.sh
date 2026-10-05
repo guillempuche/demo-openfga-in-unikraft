@@ -147,7 +147,21 @@ runtime:
   env:
     OPENFGA_DATASTORE_ENGINE: postgres
     OPENFGA_DATASTORE_URI: $(yq_str "$uri")
-    OPENFGA_DATASTORE_MAX_OPEN_CONNS: "10"
+    # Pool sizes from the production guide (min open 5-20, min idle 50-75% of
+    # it), with max open at 20 rather than Postgres' max_connections (100): a
+    # 512MiB Postgres can't serve 100 busy backends.
+    OPENFGA_DATASTORE_MAX_OPEN_CONNS: "20"
+    OPENFGA_DATASTORE_MIN_OPEN_CONNS: "5"
+    OPENFGA_DATASTORE_MIN_IDLE_CONNS: "3"
+    OPENFGA_DATASTORE_METRICS_ENABLED: "true"
+    OPENFGA_METRICS_ENABLE_RPC_HISTOGRAMS: "true"
+    # The public API forwards any caller's query: bound how much one query can
+    # return and how many datastore reads it can run at once.
+    OPENFGA_LIST_OBJECTS_MAX_RESULTS: "$FGA_LIST_MAX_RESULTS"
+    OPENFGA_LIST_USERS_MAX_RESULTS: "$FGA_LIST_MAX_RESULTS"
+    OPENFGA_MAX_CONCURRENT_READS_FOR_CHECK: "10"
+    OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_OBJECTS: "10"
+    OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_USERS: "10"
     OPENFGA_AUTHN_METHOD: preshared
     OPENFGA_AUTHN_PRESHARED_KEYS: $(yq_str "$FGA_KEY")
     OPENFGA_HTTP_ADDR: 0.0.0.0:8080

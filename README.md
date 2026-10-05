@@ -146,6 +146,8 @@ The postgres image compiles PostgreSQL 16.4 from source for x86_64; on Apple Sil
 
 Instances run images by digest (`<org>/demo-fga-api@sha256:…`), not `:latest`: `deploy.sh` uses the digest `build.sh` recorded, so a redeploy runs exactly the images that were built and verified, even if `:latest` has moved since. With nothing recorded (a fresh clone, images built on another machine), it pins and records the registry's current digest. `verify.sh` fails if an instance runs a tag or a digest other than the recorded one.
 
+OpenFGA follows the [production guide](https://openfga.dev/docs/best-practices/running-in-production): check cache on, datastore metrics and RPC latency histograms on, a small Postgres connection baseline, and, because the public API forwards any caller's query, ListObjects/ListUsers capped at 100 results with at most 10 concurrent datastore reads per query. Not applied: TLS between the API and OpenFGA (the private network is unencrypted) and tracing (no collector).
+
 What it runs, shown as flags (`<digest>` is the pinned one). The script passes the same fields with `unikraft run --load <0600 YAML>` so secrets never appear on the command line:
 
 ```bash
@@ -163,7 +165,12 @@ unikraft run --metro fra -n demo-fga-openfga --image <org>/demo-fga-openfga@<dig
   -m 512MiB --scale-to-zero policy=off --restart on-failure \
   -e OPENFGA_DATASTORE_ENGINE=postgres -e OPENFGA_DATASTORE_URI=... \
   -e OPENFGA_AUTHN_METHOD=preshared -e OPENFGA_AUTHN_PRESHARED_KEYS=... \
-  -e OPENFGA_PLAYGROUND_ENABLED=false -e OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
+  -e OPENFGA_PLAYGROUND_ENABLED=false -e OPENFGA_CHECK_QUERY_CACHE_ENABLED=true \
+  -e OPENFGA_DATASTORE_MAX_OPEN_CONNS=20 -e OPENFGA_DATASTORE_MIN_OPEN_CONNS=5 -e OPENFGA_DATASTORE_MIN_IDLE_CONNS=3 \
+  -e OPENFGA_LIST_OBJECTS_MAX_RESULTS=100 -e OPENFGA_LIST_USERS_MAX_RESULTS=100 \
+  -e OPENFGA_MAX_CONCURRENT_READS_FOR_CHECK=10 -e OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_OBJECTS=10 \
+  -e OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_USERS=10 \
+  -e OPENFGA_DATASTORE_METRICS_ENABLED=true -e OPENFGA_METRICS_ENABLE_RPC_HISTOGRAMS=true
 
 unikraft run --metro fra -n demo-fga-api --image <org>/demo-fga-api@<digest> \
   -m 512MiB -p 443:8080/http+tls -p 80:443/http+redirect \

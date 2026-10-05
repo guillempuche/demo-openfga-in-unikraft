@@ -13,6 +13,9 @@ export FGA_API_TOKEN="$FGA_KEY"
 export FGA_GRPC_ADDR="localhost:$TUNNEL_GRPC_PORT"
 export FGA_METRICS_URL="http://localhost:$TUNNEL_METRICS_PORT/metrics"
 export FGA_EXPERIMENTAL=0
+# The deployment caps ListObjects/ListUsers at this value (deploy.sh); the
+# truncation tests check it.
+export FGA_LIST_MAX_RESULTS
 
 # Test stores are named it-*; remove any left by an interrupted run, before
 # and after, so the deployed instance only keeps demo-fga.
