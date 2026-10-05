@@ -15,24 +15,33 @@ fi
 api="https://$fqdn"
 echo "API: $api"
 
-# GET a path and print the body; record a failure instead of aborting.
-get() {
-  local body
-  if body="$(curl -sS --fail-with-body --max-time "${2:-20}" "$api$1")"; then
-    echo "$body"
-  else
-    fail "GET $1: ${body:-no response}"
+# Call the API, print the response and check it with a jq filter; record a
+# failure instead of aborting. Extra arguments go to curl.
+expect() {
+  local path=$1 filter=$2 body
+  shift 2
+  if ! body="$(curl -sS --fail-with-body --max-time 60 "$@" "$api$path")"; then
+    fail "$path: ${body:-no response}"
+    return
   fi
+  echo "$body"
+  jq -e "$filter" >/dev/null <<<"$body" || fail "$path: response doesn't match $filter"
 }
 
 echo "--- /health"
-get /health
-echo "--- /check (allowed)"
-get "/check?user=user:alice&relation=can_edit&object=project:roadmap"
-echo "--- /check (denied)"
-get "/check?user=user:mallory&relation=can_edit&object=project:roadmap"
+expect /health '.openfga == "ok"'
+echo "--- /check (allowed, then denied)"
+expect "/check?user=user:alice&relation=can_edit&object=project:roadmap" '.allowed == true'
+expect "/check?user=user:mallory&relation=can_edit&object=project:roadmap" '.allowed == false'
+echo "--- /batch-check"
+expect /batch-check '(.results | map({(.correlationId): .allowed}) | add) == {"alice": true, "mallory": false}' \
+  -H 'content-type: application/json' --data '{"checks": [
+    {"correlationId": "alice", "user": "user:alice", "relation": "can_edit", "object": "project:roadmap"},
+    {"correlationId": "mallory", "user": "user:mallory", "relation": "can_edit", "object": "project:roadmap"}]}'
+echo "--- /list-objects"
+expect "/list-objects?user=user:alice&relation=can_edit&type=project" '.objects | index("project:roadmap") != null'
 echo "--- /bench x3"
-for _ in 1 2 3; do get /bench 60; done
+for _ in 1 2 3; do expect /bench '.n == 100 and .allowed == true'; done
 
 echo "--- exposure of the private instances"
 # A private instance has no service group: the CLI returns an empty object
