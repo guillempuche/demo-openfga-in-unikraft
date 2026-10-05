@@ -24,12 +24,15 @@ expect() { # <description> <actual> <expected>
 expect "unikernel Dockerfile OPENFGA_VERSION" \
   "$(sed -n 's/^ARG OPENFGA_VERSION=//p' "$root/infrastructure/unikraft/openfga/Dockerfile")" "$OPENFGA_VERSION"
 
-while read -r tag; do
-  expect "authz/docker-compose.yaml image" "$tag" "$OPENFGA_VERSION"
-done < <(sed -n 's#^ *image: openfga/openfga:##p' "$root/authz/docker-compose.yaml")
+for compose in authz/docker-compose.yaml tests/integration/docker-compose.yaml; do
+  while read -r tag; do
+    expect "$compose image" "$tag" "$OPENFGA_VERSION"
+  done < <(sed -n 's#^ *image: openfga/openfga:##p' "$root/$compose")
+done
 
-expect "CI FGA_VERSION" \
-  "$(sed -n 's/^ *FGA_VERSION: \([^ ]*\).*/\1/p' "$root/.github/workflows/ci.yml")" "$FGA_CLI_VERSION"
+while read -r v; do
+  expect "CI FGA_VERSION" "$v" "$FGA_CLI_VERSION"
+done < <(sed -n 's/^ *FGA_VERSION: \([^ ]*\).*/\1/p' "$root/.github/workflows/ci.yml")
 
 expect "flake.nix fga CLI" \
   "$(sed -n 's/^ *fgaVersion = "\([^"]*\)";/\1/p' "$root/flake.nix")" "$FGA_CLI_VERSION"
