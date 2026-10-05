@@ -5,3 +5,6 @@
 .unikraft
 # direnv
 .direnv/
+
+# Local state of scripts (e.g. check-e2e.sh fingerprint)
+.cache/

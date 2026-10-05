@@ -30,6 +30,14 @@ expect() {
 
 echo "--- /health"
 expect /health '.openfga == "ok"'
+echo "--- $OPENFGA_NAME.internal resolves to the instance's current private IP"
+private_ip="$(unikraft instances get "$OPENFGA_NAME" -f networks -o json | jq -r '.[0].networks[0]["private-ip"] // empty')"
+resolved="$(curl -sS --max-time 20 "$api/health" | jq -r '.resolved // empty' || true)"
+if [[ -n "$private_ip" && "$resolved" == "$private_ip" ]]; then
+  echo "$OPENFGA_NAME.internal -> $resolved (private IP $private_ip)"
+else
+  fail "$OPENFGA_NAME.internal resolves to '${resolved:-?}' from the API, but the private IP is '${private_ip:-?}'"
+fi
 echo "--- /check (allowed, then denied)"
 expect "/check?user=user:alice&relation=can_edit&object=project:roadmap" '.allowed == true'
 expect "/check?user=user:mallory&relation=can_edit&object=project:roadmap" '.allowed == false'
