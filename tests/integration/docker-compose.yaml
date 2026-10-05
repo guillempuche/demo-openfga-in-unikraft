@@ -43,6 +43,11 @@ services:
       - OPENFGA_AUTHN_PRESHARED_KEYS=integration-key
       # Same as the deployment: makes MINIMIZE_LATENCY and HIGHER_CONSISTENCY differ.
       - OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
+      # Lower than the default (1000) so the suite can reach the truncation of
+      # ListObjects/ListUsers with 101 tuples. Not lower: the depth test lists
+      # 61 folders in one call.
+      - OPENFGA_LIST_OBJECTS_MAX_RESULTS=100
+      - OPENFGA_LIST_USERS_MAX_RESULTS=100
       - OPENFGA_EXPERIMENTALS=authzen,inline_expressions
       - OPENFGA_AUTHZEN_BASE_URL=http://127.0.0.1:28080
       - OPENFGA_LOG_FORMAT=json

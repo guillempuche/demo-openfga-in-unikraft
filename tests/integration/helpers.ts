@@ -1,15 +1,19 @@
 // Shared setup for the OpenFGA integration suite.
 //
-// Every test that exercises an OpenFGA RPC is named `[rpc:<Name>] ...`;
-// scripts/check-api-coverage.py reads the passing test names and the server's
-// own per-method metrics to prove every RPC was called and asserted.
+// Tests are BDD style: one observable behaviour per `it`, context in nested
+// `describe('when …')` / `describe('given …')` blocks, GIVEN/WHEN/THEN comments
+// in the body. A test that exercises an OpenFGA RPC is named
+// `it('[rpc:<Name>] should …')` (the tag must be the prefix); other tests are
+// `it('should …')`. scripts/check-api-coverage.py reads the passing test names
+// and the server's own per-method metrics to prove every RPC was called and
+// asserted.
 //
 // Target: FGA_API_URL / FGA_API_TOKEN (default: the local compose stack in this
 // folder). Through the Unikraft tunnel: FGA_API_URL=http://localhost:18080.
 
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { CredentialsMethod, OpenFgaApi, OpenFgaClient, type AuthorizationModel } from '@openfga/sdk'
+import { CredentialsMethod, FgaApiValidationError, OpenFgaApi, OpenFgaClient, type AuthorizationModel } from '@openfga/sdk'
 
 export const API_URL = process.env.FGA_API_URL ?? 'http://127.0.0.1:28080'
 export const API_TOKEN = process.env.FGA_API_TOKEN ?? 'integration-key'
@@ -18,6 +22,11 @@ export const METRICS_URL = process.env.FGA_METRICS_URL ?? 'http://127.0.0.1:2211
 // Experimental features (AuthZEN, inline expressions) are only enabled on the
 // local/CI stack; the deployment doesn't turn them on.
 export const EXPERIMENTAL = (process.env.FGA_EXPERIMENTAL ?? '1') === '1'
+// OPENFGA_LIST_OBJECTS_MAX_RESULTS / OPENFGA_LIST_USERS_MAX_RESULTS of the
+// target: 100 on the compose stack in this folder. Other targets (the
+// deployment keeps the default, 1000) skip the truncation tests unless
+// FGA_LIST_MAX_RESULTS is set.
+export const LIST_MAX_RESULTS = Number(process.env.FGA_LIST_MAX_RESULTS ?? (process.env.FGA_API_URL ? 0 : 100))
 
 const MANIFEST = fileURLToPath(new URL('../../authz/models/fga.mod', import.meta.url))
 
@@ -96,4 +105,12 @@ export async function rejection(fn: () => Promise<unknown>): Promise<any> {
     return err
   }
   throw new Error('expected the call to fail, but it succeeded')
+}
+
+/**
+ * True for a 400 validation error. OpenFgaClient.write in transaction mode
+ * wraps the API error in `cause`; other calls throw it directly.
+ */
+export function isValidationError(err: any): boolean {
+  return err instanceof FgaApiValidationError || err?.cause instanceof FgaApiValidationError
 }
