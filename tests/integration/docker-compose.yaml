@@ -1,0 +1,52 @@
+# Throwaway OpenFGA for the integration suite (CI and local runs).
+#   docker compose -f tests/integration/docker-compose.yaml up -d --wait
+# Same OpenFGA version as the deployment (versions.env), PostgreSQL 16 like the
+# Unikraft instance, data on tmpfs. Experimental features are on so the suite
+# can cover them as a separate tier.
+name: demo-fga-integration
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=openfga
+      - POSTGRES_PASSWORD=integration
+      - POSTGRES_DB=openfga
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openfga"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    image: openfga/openfga:v1.21.0
+    command: migrate
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      - OPENFGA_DATASTORE_URI=postgres://openfga:integration@postgres:5432/openfga?sslmode=disable
+
+  openfga:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    image: openfga/openfga:v1.21.0
+    command: run
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      - OPENFGA_DATASTORE_URI=postgres://openfga:integration@postgres:5432/openfga?sslmode=disable
+      - OPENFGA_AUTHN_METHOD=preshared
+      - OPENFGA_AUTHN_PRESHARED_KEYS=integration-key
+      # Same as the deployment: makes MINIMIZE_LATENCY and HIGHER_CONSISTENCY differ.
+      - OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
+      - OPENFGA_EXPERIMENTALS=authzen,inline_expressions
+      - OPENFGA_AUTHZEN_BASE_URL=http://127.0.0.1:28080
+      - OPENFGA_LOG_FORMAT=json
+    ports:
+      - "127.0.0.1:28080:8080" # HTTP
+      - "127.0.0.1:28081:8081" # gRPC
+      - "127.0.0.1:22112:2112" # Prometheus metrics
