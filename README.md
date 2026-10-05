@@ -208,12 +208,14 @@ API endpoints:
 
 - `GET /health`: API status, OpenFGA reachability, what `demo-fga-openfga.internal` resolves to, and process memory.
 - `GET /check?user=user:alice&relation=can_edit&object=project:roadmap[&consistency=HIGHER_CONSISTENCY]`: one Check. The deployment enables OpenFGA's check cache, so a check right after a write can return the old answer for up to 10 s; `HIGHER_CONSISTENCY` skips the cache.
-- `POST /batch-check` with `{"checks":[{"correlationId":"a","user":"…","relation":"…","object":"…"}]}`: 1 to 50 Checks in one call.
+- `POST /batch-check` with `{"checks":[{"correlationId":"a","user":"…","relation":"…","object":"…"}]}`: 1 to 50 Checks in one call, with unique correlation ids. Results come back in request order, each with `allowed`, or with `error` when OpenFGA couldn't evaluate that item.
 - `GET /list-objects?user=user:alice&relation=can_view&type=project`: the objects of a type the user can reach.
-- `GET /bench[?n=100&user=&relation=&object=]`: up to 100 sequential Checks after 3 warm-up calls; returns p50/p95/max/min/mean in ms.
+- `GET /bench[?n=100&user=&relation=&object=]`: 1 to 100 sequential Checks (default 100) after 3 warm-up calls; returns p50/p95/max/min/mean in ms.
 - `GET /openapi.json`: the OpenAPI document, generated from the same schemas that validate requests.
 
-Errors are JSON, `{"_tag": "…", "message": "…"}`: `BadRequest` (400, including invalid query or body), `Busy` (429, a bench is already running) and `UpstreamError` (502, OpenFGA failed or timed out after 5 s, with its HTTP status in the message).
+Errors are JSON, `{"_tag": "…", "message": "…"}`: `BadRequest` (400, including invalid query or body and OpenFGA's validation errors), `Busy` (429, a bench is already running) and `UpstreamError` (502, OpenFGA failed or timed out after 5 s, with its HTTP status in the message). Only OpenFGA 5xx and network errors are retried, once.
+
+Configuration (environment): `FGA_KEY` (required, non-empty), `FGA_API_URL` (default `http://demo-fga-openfga.internal:8080`; only its origin is used), `FGA_STORE_NAME` (default `demo-fga`) or `FGA_STORE_ID` (a ULID; pins the store), `FGA_STORE_CACHE_TTL` (how long the store and model lookup is cached, default `30 seconds`) and `PORT` (default 8080). The process exits at startup if any of them is invalid.
 
 ### Redeploy
 
