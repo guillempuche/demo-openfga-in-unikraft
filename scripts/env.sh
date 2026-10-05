@@ -83,6 +83,40 @@ instance_exists() {
   unikraft instances get "$1" -f name -o json >/dev/null 2>&1
 }
 
+# Deploys pin images by digest, not :latest. build.sh records the digest of
+# each image it pushes; deploy.sh runs exactly that image, even if :latest
+# moves later (a newer build, another machine). One "<org>/<name> <digest>"
+# line per image.
+DIGESTS_FILE="$ROOT/.cache/image-digests"
+
+# The registry's current digest of <org>/<name>:latest.
+registry_digest() {
+  unikraft images list -o json | jq -r --arg r "${1%:latest}" '.[] | select(.ref == $r) | .digest' | head -n1
+}
+
+# Record <digest> as the one to deploy for <org>/<name>:latest.
+record_digest() {
+  local repo="${1%:latest}"
+  mkdir -p "$(dirname "$DIGESTS_FILE")"
+  { grep -v "^$repo " "$DIGESTS_FILE" 2>/dev/null || true; echo "$repo $2"; } >"$DIGESTS_FILE.tmp"
+  mv "$DIGESTS_FILE.tmp" "$DIGESTS_FILE"
+}
+
+# The reference to deploy: <org>/<name>@<recorded digest>. With nothing
+# recorded (a fresh clone, images built elsewhere), pin and record the
+# registry's current digest.
+pinned_image() {
+  local repo="${1%:latest}" digest
+  digest="$(awk -v r="$repo" '$1 == r {print $2}' "$DIGESTS_FILE" 2>/dev/null || true)"
+  if [[ -z "$digest" ]]; then
+    digest="$(registry_digest "$1")"
+    [[ -n "$digest" ]] || { echo "error: $repo not found in the registry; run ./scripts/build.sh" >&2; exit 1; }
+    record_digest "$1" "$digest"
+    echo "no recorded build of $repo; pinned the registry's current digest" >&2
+  fi
+  echo "$repo@$digest"
+}
+
 # Print only non-secret fields; `instances get` would otherwise include
 # runtime.env, which holds the datastore URI and the preshared key.
 show_instance() {

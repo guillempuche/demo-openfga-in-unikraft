@@ -13,6 +13,9 @@
 # secrets in the process list. Instead each instance is described in a 0600
 # temp YAML passed with --load (same schema as `unikraft run --save`).
 #
+# Images run by digest: the one build.sh last recorded (see DIGESTS_FILE in
+# env.sh), so a redeploy runs exactly what was built and verified.
+#
 # This never restarts an existing instance: to redeploy, run
 # ./scripts/cleanup.sh first. The postgres volume survives cleanup.
 . "$(dirname "$0")/env.sh"
@@ -57,10 +60,11 @@ if [[ "$target" == postgres || "$target" == all ]]; then
   if ! unikraft volumes get "$POSTGRES_VOLUME" -f name -o json >/dev/null 2>&1; then
     unikraft volumes create --metro "$UNIKRAFT_METRO" --name "$POSTGRES_VOLUME" --size 512MiB -o quiet
   fi
+  image="$(pinned_image "$POSTGRES_IMAGE")"
   cat >"$tmp" <<EOF
 name: $POSTGRES_NAME
 metro: $UNIKRAFT_METRO
-image: $POSTGRES_IMAGE
+image: $image
 autostart: true
 resources:
   memory: 512MiB
@@ -88,10 +92,11 @@ if [[ "$target" == migrate || "$target" == all ]]; then
   # the loop retries a few times because postgres may still be initialising.
   # Plain assignment (not inside the heredoc) so a missing secret aborts here.
   uri="$(datastore_uri)"
+  image="$(pinned_image "$OPENFGA_IMAGE")"
   cat >"$tmp" <<EOF
 name: $MIGRATE_NAME
 metro: $UNIKRAFT_METRO
-image: $OPENFGA_IMAGE
+image: $image
 autostart: true
 resources:
   memory: 256MiB
@@ -126,10 +131,11 @@ fi
 if [[ "$target" == openfga || "$target" == all ]]; then
   require FGA_KEY
   uri="$(datastore_uri)"
+  image="$(pinned_image "$OPENFGA_IMAGE")"
   cat >"$tmp" <<EOF
 name: $OPENFGA_NAME
 metro: $UNIKRAFT_METRO
-image: $OPENFGA_IMAGE
+image: $image
 autostart: true
 resources:
   memory: 512MiB
@@ -156,10 +162,11 @@ fi
 
 if [[ "$target" == api || "$target" == all ]]; then
   require FGA_KEY
+  image="$(pinned_image "$API_IMAGE")"
   cat >"$tmp" <<EOF
 name: $API_NAME
 metro: $UNIKRAFT_METRO
-image: $API_IMAGE
+image: $image
 autostart: true
 resources:
   memory: 512MiB

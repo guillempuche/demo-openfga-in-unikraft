@@ -16,8 +16,17 @@ build_push() {
   local name="$1" dir="$2" image="$3"
   echo "==> building $name ($dir)"
   unikraft build "$dir" --output "$outdir/$name.oci.tar"
-  echo "==> pushing unikraft.io/$image"
+  # The archive's index digest is the image's digest in the registry too.
+  local digest
+  digest="$(tar -xOf "$outdir/$name.oci.tar" index.json | jq -r '.manifests[0].digest')"
+  echo "==> pushing unikraft.io/$image ($digest)"
   unikraft images copy "$outdir/$name.oci.tar" "unikraft.io/$image"
+  if [[ "$(registry_digest "$image")" != "$digest" ]]; then
+    echo "error: the registry doesn't list $image at $digest after the push" >&2
+    exit 1
+  fi
+  # deploy.sh runs this digest from now on (see DIGESTS_FILE in env.sh).
+  record_digest "$image" "$digest"
   # Archives are large (the postgres one is several hundred MB); free the space
   # before building the next image.
   rm -f "$outdir/$name.oci.tar"

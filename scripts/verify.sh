@@ -51,6 +51,19 @@ expect "/list-objects?user=user:alice&relation=can_edit&type=project" '.objects 
 echo "--- /bench x3"
 for _ in 1 2 3; do expect /bench '.n == 100 and .allowed == true'; done
 
+echo "--- deployed images are pinned digests from the recorded builds"
+for name in "$POSTGRES_NAME" "$OPENFGA_NAME" "$API_NAME"; do
+  running="$(unikraft instances get "$name" -f image -o json | jq -r '.[0].image // empty')"
+  recorded="$(awk -v r="$UNIKRAFT_ORG/$name" '$1 == r {print $1 "@" $2}' "$DIGESTS_FILE" 2>/dev/null || true)"
+  if [[ "$running" != *@sha256:* ]]; then
+    fail "$name runs '${running:-?}', not a pinned digest; redeploy with ./scripts/deploy.sh"
+  elif [[ -n "$recorded" && "$running" != "$recorded" ]]; then
+    fail "$name runs $running, but the recorded build is $recorded"
+  else
+    echo "$name: $running"
+  fi
+done
+
 echo "--- exposure of the private instances"
 # A private instance has no service group: the CLI returns an empty object
 # ({"uuid":"", ...}), so test the uuid rather than null.
