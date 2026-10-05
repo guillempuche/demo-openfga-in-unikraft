@@ -89,7 +89,7 @@ Integration tests are named `[rpc:<Name>] ...` (the API gate counts them) and us
 ./scripts/cleanup.sh          # delete demo-fga-* instances (keeps volume and images)
 ```
 
-Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. Building the postgres image takes about 11 minutes (PostgreSQL compiled under emulation on Apple Silicon).
+Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. Instances run images by digest: `build.sh` records each pushed digest in `.cache/image-digests`, `deploy.sh` runs those (or pins the registry's current digest when none is recorded), and `verify.sh` fails on a tag or a different digest. To deploy a newer image, build it; to deploy another machine's build, delete its line from `.cache/image-digests`. Building the postgres image takes about 11 minutes (PostgreSQL compiled under emulation on Apple Silicon).
 
 ## Guardrails
 

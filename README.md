@@ -129,6 +129,8 @@ unikraft build infrastructure/unikraft/openfga --output ./openfga.oci.tar
 unikraft images copy ./openfga.oci.tar unikraft.io/<org>/demo-fga-openfga:latest
 ```
 
+After each push, `build.sh` checks that the registry lists the archive's digest and records it in `.cache/image-digests` (gitignored).
+
 The postgres image compiles PostgreSQL 16.4 from source for x86_64; on Apple Silicon that runs under emulation and took 11.5 minutes the first time.
 
 ### Deploy
@@ -142,26 +144,28 @@ The postgres image compiles PostgreSQL 16.4 from source for x86_64; on Apple Sil
 ./scripts/deploy.sh api       # public HTTPS, 512MiB, scale-to-zero on (5s cooldown)
 ```
 
-What it runs, shown as flags. The script passes the same fields with `unikraft run --load <0600 YAML>` so secrets never appear on the command line:
+Instances run images by digest (`<org>/demo-fga-api@sha256:…`), not `:latest`: `deploy.sh` uses the digest `build.sh` recorded, so a redeploy runs exactly the images that were built and verified, even if `:latest` has moved since. With nothing recorded (a fresh clone, images built on another machine), it pins and records the registry's current digest. `verify.sh` fails if an instance runs a tag or a digest other than the recorded one.
+
+What it runs, shown as flags (`<digest>` is the pinned one). The script passes the same fields with `unikraft run --load <0600 YAML>` so secrets never appear on the command line:
 
 ```bash
 unikraft volumes create --metro fra --name demo-fga-pgdata --size 512MiB
-unikraft run --metro fra -n demo-fga-postgres --image <org>/demo-fga-postgres:latest \
+unikraft run --metro fra -n demo-fga-postgres --image <org>/demo-fga-postgres@<digest> \
   -m 512MiB --scale-to-zero policy=off --restart on-failure -v demo-fga-pgdata:/volume \
   -e POSTGRES_USER=openfga -e POSTGRES_DB=openfga -e POSTGRES_PASSWORD=... -e PGDATA=/volume/postgres
 
-unikraft run --metro fra -n demo-fga-migrate --image <org>/demo-fga-openfga:latest \
+unikraft run --metro fra -n demo-fga-migrate --image <org>/demo-fga-openfga@<digest> \
   -m 256MiB --restart never --args "/usr/bin/openfga migrate" \
   -e OPENFGA_DATASTORE_ENGINE=postgres \
   -e OPENFGA_DATASTORE_URI=postgres://openfga:...@demo-fga-postgres.internal:5432/openfga?sslmode=disable
 
-unikraft run --metro fra -n demo-fga-openfga --image <org>/demo-fga-openfga:latest \
+unikraft run --metro fra -n demo-fga-openfga --image <org>/demo-fga-openfga@<digest> \
   -m 512MiB --scale-to-zero policy=off --restart on-failure \
   -e OPENFGA_DATASTORE_ENGINE=postgres -e OPENFGA_DATASTORE_URI=... \
   -e OPENFGA_AUTHN_METHOD=preshared -e OPENFGA_AUTHN_PRESHARED_KEYS=... \
   -e OPENFGA_PLAYGROUND_ENABLED=false -e OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
 
-unikraft run --metro fra -n demo-fga-api --image <org>/demo-fga-api:latest \
+unikraft run --metro fra -n demo-fga-api --image <org>/demo-fga-api@<digest> \
   -m 512MiB -p 443:8080/http+tls -p 80:443/http+redirect \
   --scale-to-zero policy=on,cooldown-time=5000 --restart on-failure \
   -e FGA_API_URL=http://demo-fga-openfga.internal:8080 -e FGA_KEY=...
@@ -213,7 +217,7 @@ Errors are JSON, `{"_tag": "…", "message": "…"}`: `BadRequest` (400, includi
 
 ### Redeploy
 
-Never restart in place; delete and run again. The volume, and so the store, model and tuples, survives:
+Never restart in place; delete and run again. The volume, and so the store, model and tuples, survives, and the instances come back on the same image digests:
 
 ```bash
 ./scripts/cleanup.sh && ./scripts/deploy.sh
@@ -248,6 +252,7 @@ unikraft images delete <org>/demo-fga-api:latest
 | Secrets through `unikraft run --load` | [`scripts/deploy.sh`](scripts/deploy.sh) | `-e KEY=VALUE` puts secrets in the process list; a 0600 YAML spec doesn't. |
 | Pin the CLI profile in scripts | [`scripts/env.sh`](scripts/env.sh) | Scripts can't act on another account just because a different profile is active. |
 | Resource-name prefix guard | [`scripts/cleanup.sh`](scripts/cleanup.sh) | Cleanup refuses to touch anything outside `demo-fga-*` on a shared account. |
+| Deploy images by digest, recorded at build time | [`scripts/build.sh`](scripts/build.sh), [`scripts/env.sh`](scripts/env.sh) | A redeploy runs what was verified, not whatever `:latest` points at now. |
 | Two-step build: local OCI archive, then push | [`scripts/build.sh`](scripts/build.sh) | Avoids `failed to package kernel … connection reset by peer`. |
 | One-off migration instance on the private network | [`scripts/deploy.sh`](scripts/deploy.sh) | No database port exposed for migrations; the deploy stops unless it exits 0. |
 | `fga model test` against a deployed store | [`scripts/test-remote.sh`](scripts/test-remote.sh) | The same test files run locally and against the deployed server's evaluation (the CLI sends test tuples as contextual tuples, so stored-tuple reads are covered by integration tests instead). |
