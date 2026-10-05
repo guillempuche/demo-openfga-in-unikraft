@@ -17,7 +17,7 @@ Example of OpenFGA (ReBAC, fine-grained authorization) running on Unikraft Cloud
 | Config | `authz/.env` (from `authz/.env.example`) | root `.env` (from `.env.example`): `UNIKRAFT_PROFILE`, `FGA_KEY`, `POSTGRES_PASSWORD`, optional `OPENFGA_DATASTORE_URI` |
 | Store | create with `fga store create` (no fixed ID) | `demo-fga`, created by `scripts/seed.sh`; the API finds it by name |
 
-Versions are pinned in `versions.env` (OpenFGA v1.21.0, fga CLI 0.8.1); `scripts/check-versions.sh` fails CI if the Dockerfile, compose file, CI or `docs/repos` disagree. Upgrade them together. Tooling: OpenFGA CLI `fga` (0.8.1, which embeds the same OpenFGA version), `unikraft` CLI 0.5.x (not the deprecated `kraft cloud`), Node.js 24 (runs `.ts` natively), Docker with BuildKit, jq, Python 3, shellcheck, grpcurl. `nix develop` provides all of them except Docker.
+Versions are pinned in `versions.env` (OpenFGA v1.21.0, fga CLI 0.8.1); `scripts/check-versions.sh` fails CI if the Dockerfile, compose file, CI or `docs/repos` disagree. Upgrade them together. Renovate (`renovate.json`) proposes those bumps as one "OpenFGA" PR via custom regex managers; a new pin location needs a matching regex there and a check in `check-versions.sh`. Tooling: OpenFGA CLI `fga` (0.8.1, which embeds the same OpenFGA version), `unikraft` CLI 0.5.x (not the deprecated `kraft cloud`), Node.js 24 (runs `.ts` natively), Docker with BuildKit, jq, Python 3, shellcheck, grpcurl. `nix develop` provides all of them except Docker.
 
 ## Skills
 

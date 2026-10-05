@@ -423,6 +423,12 @@ python3 scripts/check-api-coverage.py   # needs the tests/integration compose st
 
 CI runs these, plus `shellcheck` on the scripts, the version check, a Compose config check and a build of the API rootfs.
 
+[Renovate](https://docs.renovatebot.com) ([`renovate.json`](renovate.json)) opens update PRs on Monday mornings, for releases at least 3 days old:
+
+- OpenFGA server and fga CLI bumps arrive as one "OpenFGA" PR covering `versions.env`, the unikernel Dockerfile, both compose files, CI and `flake.nix`. The PR notes the manual steps: `git subtree pull` for `docs/repos/` and the `flake.nix` hashes. Until those are done, `check-versions.sh` fails it.
+- npm packages (Effect grouped), Docker base images, the PostgreSQL source version, grpcurl and GitHub Actions get their own PRs.
+- Major PostgreSQL and Node.js upgrades are never proposed: they need a data migration or engine and CI changes.
+
 ## Reference
 
 - [unikraft CLI](https://unikraft.com/docs/cli/unikraft)
