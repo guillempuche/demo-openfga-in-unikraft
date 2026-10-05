@@ -8,7 +8,12 @@
 //   failures. Effect's timeout cancels the HTTP call through an AbortSignal.
 // - SDK errors become typed errors: invalid requests -> BadRequest, everything
 //   else (network, 5xx, auth to OpenFGA) -> UpstreamError with the status.
+// - Idle connections to OpenFGA close after IDLE_SOCKET. The SDK's own agents
+//   keep them open forever, and with scale-to-zero policy `on` an open TCP
+//   connection keeps the API instance from going to standby.
 
+import { Agent as HttpAgent } from 'node:http'
+import { Agent as HttpsAgent } from 'node:https'
 import {
   CredentialsMethod,
   FgaApiValidationError,
@@ -23,6 +28,7 @@ import { BadRequest, UpstreamError } from './errors.ts'
 
 const STORE_TTL = Duration.seconds(30)
 const CALL_TIMEOUT = Duration.seconds(5)
+const IDLE_SOCKET = Duration.seconds(4) // same as fetch's keep-alive default
 
 export interface Tuple {
   readonly user: string
@@ -60,6 +66,11 @@ export class OpenFga extends Context.Service<OpenFga>()('OpenFga', {
       apiUrl: config.fgaApiUrl.origin,
       credentials: { method: CredentialsMethod.ApiToken, config: { token: Redacted.value(config.fgaKey) } },
       retryParams: { maxRetry: 0 },
+      // Spread into every request's axios config, replacing the SDK's agents.
+      baseOptions: {
+        httpAgent: new HttpAgent({ keepAlive: true, timeout: Duration.toMillis(IDLE_SOCKET) }),
+        httpsAgent: new HttpsAgent({ keepAlive: true, timeout: Duration.toMillis(IDLE_SOCKET) }),
+      },
     })
 
     // Wrap an SDK call: timeout (cancels the request) + typed errors. The SDK

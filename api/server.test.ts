@@ -38,6 +38,9 @@ async function readJson(req: IncomingMessage): Promise<any> {
   return raw ? JSON.parse(raw) : undefined
 }
 
+// Open TCP connections from the API, to check that idle ones get closed.
+let openConnections = 0
+
 const openfga: Server = createServer(async (req, res) => {
   stub.lastAuthorization = req.headers.authorization ?? ''
   const url = new URL(req.url ?? '/', 'http://stub')
@@ -68,6 +71,11 @@ const openfga: Server = createServer(async (req, res) => {
   }
   res.writeHead(reply.status, { 'content-type': 'application/json' })
   res.end(reply.body)
+})
+openfga.keepAliveTimeout = 60_000 // only the API may close idle connections
+openfga.on('connection', (socket) => {
+  openConnections++
+  socket.on('close', () => openConnections--)
 })
 
 // --- the API under test ----------------------------------------------------
@@ -157,6 +165,14 @@ describe('GET /check', () => {
     const { status, body } = await get('/check?user=user:a&relation=owner&object=project:x')
     assert.equal(status, 200)
     assert.equal(body.allowed, false)
+  })
+
+  // With scale-to-zero policy `on`, an open connection keeps the instance up.
+  test('closes idle connections to OpenFGA within 5 seconds', async () => {
+    await get('/check?user=user:a&relation=owner&object=project:x')
+    assert.ok(openConnections > 0)
+    await new Promise((r) => setTimeout(r, 5000))
+    assert.equal(openConnections, 0)
   })
 
   test('reports an OpenFGA failure as 502 and keeps its HTTP status, even with a non-JSON body', async () => {
