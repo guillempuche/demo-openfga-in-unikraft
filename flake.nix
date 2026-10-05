@@ -44,6 +44,9 @@
             unikraft-cli
             pkgs.jq
             pkgs.nodejs_24 # demo API (runs .ts natively)
+            pkgs.python3 # coverage gates (scripts/check-*-coverage.py)
+            pkgs.shellcheck # CI lints scripts/ with it
+            pkgs.grpcurl # integration suite: gRPC-only UpdateStore
             pkgs.starship # shell beautifier
             pkgs.zsh # ensure zsh is available for nix develop -c zsh
           ];
