@@ -37,7 +37,7 @@ authz/models/               fga.mod + modules (core, conditions, projects, tasks
 authz/seed/tuples.yaml      synthetic tuples for the demo store
 api/                        src/ (Effect 4 HttpApi + @openfga/sdk), server.test.ts, Kraftfile, Dockerfile (bundles to dist/server.mjs)
 infrastructure/unikraft/    openfga/ and postgres/ Kraftfiles and Dockerfiles
-scripts/                    env.sh (shared), build, deploy, tunnel, seed, test-remote, test-integration-remote, verify, cleanup, sync-agent-skills, check-* gates
+scripts/                    env.sh (shared), build, deploy, tunnel, seed, test-remote, test-integration-remote, check-e2e, verify, measure-wake, cleanup, sync-agent-skills, check-* gates
 tests/integration/          OpenFGA integration suite (@openfga/sdk + node:test), its compose stack (ports 28080/28081/22112)
 .agents/skills/             agent skills (unikraft, git-commit-messages, write-comments); .claude/skills/ symlinks the repo ones
 docs/RESULTS.md             measured results; docs/1-*, docs/2-* are historical (legacy CLI)
@@ -82,7 +82,9 @@ Integration tests are named `[rpc:<Name>] ...` (the API gate counts them) and us
 ./scripts/seed.sh             # needs the tunnel
 ./scripts/test-remote.sh      # fga model test against the deployed server on a fresh store (needs the tunnel)
 ./scripts/test-integration-remote.sh  # integration suite + API gate on the deployment (needs the tunnel)
-./scripts/verify.sh           # public API + exposure checks; non-zero exit on failure
+./scripts/check-e2e.sh        # write → public API sees it → delete; store fingerprint vs the last run (needs the tunnel)
+./scripts/verify.sh           # public API answers, .internal = private IP, exposure checks; non-zero exit on failure
+./scripts/measure-wake.sh     # API response time from standby vs running (10 runs)
 ./scripts/cleanup.sh          # delete demo-fga-* instances (keeps volume and images)
 ```
 

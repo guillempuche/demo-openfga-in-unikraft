@@ -199,6 +199,20 @@ The API was rebuilt on Effect 4.0.0 (`HttpApi`) and `@openfga/sdk` 0.9.7, bundle
 
 The first deployment never went to standby: after 251 s idle it was still `running`. Under scale-to-zero policy `on`, an instance stays up while any TCP connection is open. The SDK creates `http.Agent({ keepAlive: true })` with no idle timeout, so its pooled connections to OpenFGA never closed (the old `fetch` client drops idle ones after about 4 s). The API now passes agents that close idle sockets after 4 s, and `server.test.ts` checks that no idle connection to OpenFGA is left after 5 s; that test fails without the fix.
 
+## Services and connections, end to end (2026-10-05)
+
+Scripted checks with pass/fail output, run against the deployment above:
+
+| Check | Script | Result |
+| --- | --- | --- |
+| `demo-fga-openfga.internal`, resolved inside the API, equals the instance's current private IP | `verify.sh` | ✅ 10.0.6.149 = 10.0.6.149, before and after a full redeploy |
+| Tuple written through the tunnel → public API `/check` and `/list-objects` see it → deleted → `/check` denies | `check-e2e.sh` | ✅ all 5 checks, before and after a full redeploy |
+| Store, latest model and stored tuples survive `cleanup.sh` + `deploy.sh` (volume kept) | `check-e2e.sh` fingerprint | ✅ same store ID, model ID and tuple hash; the migration found schema version 6 |
+| API answer time from standby vs running (`/health`, new TLS connection, 10 runs) | `measure-wake.sh` | from standby p50 0.760 s (0.673–0.891), running p50 0.550 s (0.436–0.621): waking adds about 0.21 s |
+| Tunnel relays left after closing the tunnel with one SIGTERM | `verify.sh` | ✅ none, twice |
+
+The first `check-e2e.sh` run failed in a useful way. The deployment enables OpenFGA's check cache (`OPENFGA_CHECK_QUERY_CACHE_ENABLED=true`, 10 s TTL), so the Check right after the write returned the `false` cached by the Check before it. `/check` now takes `consistency=HIGHER_CONSISTENCY`, which skips the cache, and the script uses it for reads that must see a write. (The same run also had a jq bug: `.allowed // "error"` turns `false` into `"error"`.)
+
 ## Build notes
 
 - Building OpenFGA from its Kraftfile failed with `dockerfile context does not exist` until the `rootfs` path was fixed.

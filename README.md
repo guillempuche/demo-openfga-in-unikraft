@@ -181,7 +181,10 @@ unikraft instances get demo-fga-openfga -f name,state,networks,service
 ./scripts/seed.sh                     # terminal 2: create store "demo-fga", write model + synthetic tuples
 ./scripts/test-remote.sh              # fga model test against the deployed server, on a fresh store
 ./scripts/test-integration-remote.sh  # every OpenFGA RPC against the deployed server (see Integration tests)
+./scripts/check-e2e.sh                # write a tuple through the tunnel, see it (and its deletion) through the public API
 ```
+
+`check-e2e.sh` also prints a fingerprint of the `demo-fga` store (store ID, latest model ID, hash of the stored tuples) and compares it with the previous run. Run it before and after a redeploy to show the data survived.
 
 Stop `tunnel.sh` with Ctrl-C: it closes all three tunnels with one signal each, which removes their relay instances.
 
@@ -191,12 +194,14 @@ Stop `tunnel.sh` with Ctrl-C: it closes all three tunnels with one signal each, 
 ./scripts/verify.sh
 ```
 
-It calls the public API (`/health`, `/check` allowed and denied, three `/bench` runs) and checks that OpenFGA and Postgres have no service, that no `demo-fga-*` instance other than the API and no open tunnel relay has a public domain (other workloads on the account are ignored), and that ports 8080/8081/3000/2112/5432 don't answer. It exits non-zero if any check fails.
+It calls the public API and checks the answers (`/health` reaches OpenFGA; `/check`, `/batch-check` and `/list-objects` allow alice and deny mallory; three `/bench` runs). It compares what `demo-fga-openfga.internal` resolves to from inside the API with the instance's current private IP. It also checks that OpenFGA and Postgres have no service, that no `demo-fga-*` instance other than the API and no open tunnel relay has a public domain (other workloads on the account are ignored), and that ports 8080/8081/3000/2112/5432 don't answer. It exits non-zero if any check fails.
+
+To time a wake from scale-to-zero, run `./scripts/measure-wake.sh [runs]`: it waits for the API to go to standby, then times `/health` from standby and while running.
 
 API endpoints:
 
 - `GET /health`: API status, OpenFGA reachability, what `demo-fga-openfga.internal` resolves to, and process memory.
-- `GET /check?user=user:alice&relation=can_edit&object=project:roadmap`: one Check.
+- `GET /check?user=user:alice&relation=can_edit&object=project:roadmap[&consistency=HIGHER_CONSISTENCY]`: one Check. The deployment enables OpenFGA's check cache, so a check right after a write can return the old answer for up to 10 s; `HIGHER_CONSISTENCY` skips the cache.
 - `POST /batch-check` with `{"checks":[{"correlationId":"a","user":"…","relation":"…","object":"…"}]}`: 1 to 50 Checks in one call.
 - `GET /list-objects?user=user:alice&relation=can_view&type=project`: the objects of a type the user can reach.
 - `GET /bench[?n=100&user=&relation=&object=]`: up to 100 sequential Checks after 3 warm-up calls; returns p50/p95/max/min/mean in ms.
