@@ -7,7 +7,8 @@
 failures=0
 fail() { echo "FAIL: $*"; failures=$((failures + 1)); }
 
-fqdn="$(unikraft instances get "$API_NAME" -f service.domains -o json 2>/dev/null | jq -r '.[0].service.domains[0].fqdn // empty' || true)"
+# The domain belongs to the persistent service group, not to the instance.
+fqdn="$(unikraft services get "$API_SERVICE" -f domains -o json 2>/dev/null | jq -r '.[0].domains[0].fqdn // empty' || true)"
 if [[ -z "$fqdn" ]]; then
   echo "error: $API_NAME has no public domain (is it deployed?)" >&2
   exit 1
@@ -62,6 +63,19 @@ for name in "$POSTGRES_NAME" "$OPENFGA_NAME" "$API_NAME"; do
   else
     echo "$name: $running"
   fi
+done
+
+echo "--- the API runs in the persistent service group, and restarts if it exits"
+api_spec="$(unikraft instances get "$API_NAME" -f service.name,restart.policy -o json | jq -c '.[0]')"
+if [[ "$(jq -r '.service.name // ""' <<<"$api_spec")" == "$API_SERVICE" &&
+  "$(unikraft services get "$API_SERVICE" -f persistent -o json | jq -r '.[0].persistent')" == true ]]; then
+  echo "$API_NAME: in persistent service group $API_SERVICE"
+else
+  fail "$API_NAME is not in the persistent service group $API_SERVICE: $api_spec"
+fi
+for name in "$POSTGRES_NAME" "$OPENFGA_NAME" "$API_NAME"; do
+  policy="$(unikraft instances get "$name" -f restart.policy -o json | jq -r '.[0].restart.policy // ""')"
+  [[ "$policy" == always ]] && echo "$name: restart policy always" || fail "$name restart policy is '$policy', not always"
 done
 
 echo "--- exposure of the private instances"

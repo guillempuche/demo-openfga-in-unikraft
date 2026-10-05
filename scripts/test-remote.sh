@@ -14,6 +14,8 @@ require FGA_KEY
 
 export FGA_API_URL="http://localhost:$TUNNEL_PORT"
 export FGA_API_TOKEN="$FGA_KEY"
+# The CLI also reads FGA_MODEL_ID; this script must use the store's own models.
+unset FGA_MODEL_ID
 
 store_name="demo-fga-test-$(date +%Y%m%d%H%M%S)"
 FGA_STORE_ID="$(fga store create --name "$store_name" | jq -r '.store.id')"

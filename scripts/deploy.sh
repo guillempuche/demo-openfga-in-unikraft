@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Create the instances: ./scripts/deploy.sh [postgres|migrate|openfga|api|all]
+# Create the instances: ./scripts/deploy.sh [postgres|migrate|openfga|backend|api|all]
+# (backend = postgres, migrate and openfga: the first deploy runs it, then
+# seed.sh, then `deploy.sh api`, so the API pins the seeded model from the start.)
 #
 # Everything runs on Unikraft Cloud, on the account's private network:
 # - demo-fga-postgres: private, persistent volume demo-fga-pgdata, scale-to-zero off.
@@ -22,8 +24,8 @@
 
 target="${1:-all}"
 case "$target" in
-  postgres | migrate | openfga | api | all) ;;
-  *) echo "usage: $0 [postgres|migrate|openfga|api|all]" >&2; exit 1 ;;
+  postgres | migrate | openfga | backend | api | all) ;;
+  *) echo "usage: $0 [postgres|migrate|openfga|backend|api|all]" >&2; exit 1 ;;
 esac
 
 tmp="$(umask 077; mktemp)"
@@ -55,7 +57,7 @@ wait_running() {
   show_instance "$1"
 }
 
-if [[ "$target" == postgres || "$target" == all ]]; then
+if [[ "$target" == postgres || "$target" == backend || "$target" == all ]]; then
   require POSTGRES_PASSWORD
   if ! unikraft volumes get "$POSTGRES_VOLUME" -f name -o json >/dev/null 2>&1; then
     unikraft volumes create --metro "$UNIKRAFT_METRO" --name "$POSTGRES_VOLUME" --size 512MiB -o quiet
@@ -69,9 +71,14 @@ autostart: true
 resources:
   memory: 512MiB
 restart:
-  policy: on-failure
+  policy: always
+# The official pattern (examples/postgres): standby when its connections are
+# idle, resumed with memory intact (stateful) when a packet arrives. The
+# preloaded pg_ukc_scaletozero extension keeps it up while a query runs.
 scale-to-zero:
-  policy: "off"
+  policy: idle
+  stateful: true
+  cooldown-time: 30s
 volumes:
 - name: $POSTGRES_VOLUME
   at: /volume
@@ -86,7 +93,7 @@ EOF
   wait_running "$POSTGRES_NAME"
 fi
 
-if [[ "$target" == migrate || "$target" == all ]]; then
+if [[ "$target" == migrate || "$target" == backend || "$target" == all ]]; then
   # Same OpenFGA image, `migrate` instead of `run`, on the private network.
   # restart=never so a failed run stays stopped and its exit code is final;
   # the loop retries a few times because postgres may still be initialising.
@@ -105,7 +112,6 @@ restart:
 runtime:
   args: [/usr/bin/openfga, migrate]
   env:
-    OPENFGA_DATASTORE_ENGINE: postgres
     OPENFGA_DATASTORE_URI: $(yq_str "$uri")
 EOF
   migrated=false
@@ -128,7 +134,7 @@ EOF
   fi
 fi
 
-if [[ "$target" == openfga || "$target" == all ]]; then
+if [[ "$target" == openfga || "$target" == backend || "$target" == all ]]; then
   require FGA_KEY
   uri="$(datastore_uri)"
   image="$(pinned_image "$OPENFGA_IMAGE")"
@@ -140,12 +146,11 @@ autostart: true
 resources:
   memory: 512MiB
 restart:
-  policy: on-failure
+  policy: always
 scale-to-zero:
   policy: "off"
 runtime:
   env:
-    OPENFGA_DATASTORE_ENGINE: postgres
     OPENFGA_DATASTORE_URI: $(yq_str "$uri")
     # Pool sizes from the production guide (min open 5-20, min idle 50-75% of
     # it), with max open at 20 rather than Postgres' max_connections (100): a
@@ -162,13 +167,8 @@ runtime:
     OPENFGA_MAX_CONCURRENT_READS_FOR_CHECK: "10"
     OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_OBJECTS: "10"
     OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_USERS: "10"
-    OPENFGA_AUTHN_METHOD: preshared
     OPENFGA_AUTHN_PRESHARED_KEYS: $(yq_str "$FGA_KEY")
-    OPENFGA_HTTP_ADDR: 0.0.0.0:8080
-    OPENFGA_PLAYGROUND_ENABLED: "false"
     OPENFGA_CHECK_QUERY_CACHE_ENABLED: $(yq_str "${OPENFGA_CHECK_QUERY_CACHE_ENABLED:-true}")
-    OPENFGA_LOG_FORMAT: json
-    OPENFGA_LOG_LEVEL: info
 EOF
   run_from_yaml "$OPENFGA_NAME"
   wait_running "$OPENFGA_NAME"
@@ -176,6 +176,17 @@ fi
 
 if [[ "$target" == api || "$target" == all ]]; then
   require FGA_KEY
+  # Pin the model seed.sh recorded; without one (first deploy, before seeding)
+  # the API follows the store's latest model.
+  model_id="$(cat "$MODEL_ID_FILE" 2>/dev/null || true)"
+  if [[ -n "$model_id" && ! "$model_id" =~ ^[0-9A-HJKMNP-TV-Z]{26}$ ]]; then
+    echo "error: $MODEL_ID_FILE doesn't hold a model id (ULID): $model_id" >&2
+    exit 1
+  fi
+  if ! unikraft services get "$API_SERVICE" -f name -o json >/dev/null 2>&1; then
+    unikraft services create --metro "$UNIKRAFT_METRO" --name "$API_SERVICE" \
+      --service 443:8080/http+tls --service 80:443/http+redirect -o quiet
+  fi
   image="$(pinned_image "$API_IMAGE")"
   cat >"$tmp" <<EOF
 name: $API_NAME
@@ -185,24 +196,25 @@ autostart: true
 resources:
   memory: 512MiB
 restart:
-  policy: on-failure
+  policy: always
 scale-to-zero:
   policy: "on"
   cooldown-time: 5s
+# The persistent service group demo-fga-api (created above if missing) owns
+# the public domain, so the URL survives redeploys.
 service:
-  services:
-  - source: 443
-    destination: 8080
-    handlers: [http, tls]
-  - source: 80
-    destination: 443
-    handlers: [http, redirect]
+  name: $API_SERVICE
 runtime:
   env:
     PORT: "8080"
     FGA_API_URL: http://$OPENFGA_NAME.internal:8080
     FGA_STORE_NAME: $(yq_str "$FGA_STORE_NAME")
     FGA_KEY: $(yq_str "$FGA_KEY")
+    # Unikraft's proxy replaces X-Forwarded-For with the caller's address
+    # (verified: a forged value is overwritten), so it's the client IP for the
+    # model's office-network condition.
+    CLIENT_IP_FROM: x-forwarded-for
+${model_id:+    FGA_MODEL_ID: $(yq_str "$model_id")}
 EOF
   run_from_yaml "$API_NAME"
   wait_running "$API_NAME"

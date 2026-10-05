@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Delete the demo instances: ./scripts/cleanup.sh [--volume] [--images] [--all]
-#   --volume  also delete the postgres volume (drops the OpenFGA data)
-#   --images  also delete the demo-fga-* images
-#   --all     both
+# Delete the demo instances: ./scripts/cleanup.sh [--volume] [--images] [--service] [--all]
+#   --volume   also delete the postgres volume (drops the OpenFGA data)
+#   --images   also delete the demo-fga-* images
+#   --service  also delete the API's service group (its public URL is gone for good)
+#   --all      all three
 # Only ever touches names starting with demo-fga-.
 . "$(dirname "$0")/env.sh"
 
 volume=false
 images=false
+service=false
 for arg in "$@"; do
   case "$arg" in
     --volume) volume=true ;;
     --images) images=true ;;
-    --all) volume=true; images=true ;;
-    *) echo "usage: $0 [--volume] [--images] [--all]" >&2; exit 1 ;;
+    --service) service=true ;;
+    --all) volume=true; images=true; service=true ;;
+    *) echo "usage: $0 [--volume] [--images] [--service] [--all]" >&2; exit 1 ;;
   esac
 done
 
@@ -35,6 +38,16 @@ for name in "$API_NAME" "$OPENFGA_NAME" "$MIGRATE_NAME" "$POSTGRES_NAME"; do
   fi
 done
 
+if $service; then
+  guard "$API_SERVICE"
+  if unikraft services get "$API_SERVICE" -f name -o json >/dev/null 2>&1; then
+    unikraft services delete "$API_SERVICE" -o quiet >/dev/null && echo "deleted service group $API_SERVICE" ||
+      fail "could not delete service group $API_SERVICE"
+  else
+    echo "$API_SERVICE: not found"
+  fi
+fi
+
 if $volume; then
   guard "$POSTGRES_VOLUME"
   if unikraft volumes get "$POSTGRES_VOLUME" -f name -o json >/dev/null 2>&1; then
@@ -42,6 +55,8 @@ if $volume; then
     if unikraft volumes wait "$POSTGRES_VOLUME" --until state==available --timeout 2m -o quiet >/dev/null &&
       unikraft volumes delete "$POSTGRES_VOLUME" -o quiet >/dev/null; then
       echo "deleted volume $POSTGRES_VOLUME"
+      # The store, and so the model the API pinned, went with the volume.
+      rm -f "$MODEL_ID_FILE"
     else
       fail "could not delete volume $POSTGRES_VOLUME (still attached?)"
     fi

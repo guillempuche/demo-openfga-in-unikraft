@@ -10,6 +10,8 @@ require FGA_KEY
 
 export FGA_API_URL="http://localhost:$TUNNEL_PORT"
 export FGA_API_TOKEN="$FGA_KEY"
+# The CLI also reads FGA_MODEL_ID; this script must use the store's own models.
+unset FGA_MODEL_ID
 
 failures=0
 pass() { echo "PASS: $*"; }

@@ -53,6 +53,8 @@ POSTGRES_VOLUME="${PREFIX}pgdata"
 MIGRATE_NAME="${PREFIX}migrate"
 OPENFGA_NAME="${PREFIX}openfga"
 API_NAME="${PREFIX}api"
+# Persistent service group that owns the API's public domain.
+API_SERVICE="${PREFIX}api"
 POSTGRES_IMAGE="$UNIKRAFT_ORG/${POSTGRES_NAME}:latest"
 OPENFGA_IMAGE="$UNIKRAFT_ORG/${OPENFGA_NAME}:latest"
 API_IMAGE="$UNIKRAFT_ORG/${API_NAME}:latest"
@@ -91,6 +93,8 @@ instance_exists() {
 # moves later (a newer build, another machine). One "<org>/<name> <digest>"
 # line per image.
 DIGESTS_FILE="$ROOT/.cache/image-digests"
+# The authorization model id the API pins (written by seed.sh, read by deploy.sh).
+MODEL_ID_FILE="$ROOT/.cache/fga-model-id"
 
 # The registry's current digest of <org>/<name>:latest. `images get` reads the
 # registry itself; `images list` can lag a push by minutes. -f digest keeps the
