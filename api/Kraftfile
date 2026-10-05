@@ -11,4 +11,4 @@ rootfs:
   source: ./Dockerfile
   format: erofs
 
-cmd: ["/usr/bin/node", "/usr/src/server.ts"]
+cmd: ["/usr/bin/node", "/usr/src/server.mjs"]

@@ -10,10 +10,11 @@
     "verbatimModuleSyntax": true,
     "types": [
       "node"
-    ]
+    ],
+    "skipLibCheck": true
   },
   "include": [
-    "server.ts",
+    "src/*.ts",
     "server.test.ts"
   ]
 }
