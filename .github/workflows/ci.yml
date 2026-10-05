@@ -81,6 +81,12 @@ jobs:
       # Runs the suite; every RPC needs a passing [rpc:X] test and must show up
       # in OpenFGA's own per-method metrics during the run.
       - run: python3 scripts/check-api-coverage.py
+      # The bundled API against this OpenFGA, on its own throwaway stores.
+      - name: API integration tests
+        working-directory: api
+        run: |
+          npm ci
+          npm run test:integration
       - if: failure()
         run: docker compose -f tests/integration/docker-compose.yaml logs openfga | tail -100
 

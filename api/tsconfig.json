@@ -15,6 +15,7 @@
   },
   "include": [
     "src/*.ts",
-    "server.test.ts"
+    "server.test.ts",
+    "integration.test.ts"
   ]
 }
