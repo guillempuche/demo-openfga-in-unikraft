@@ -7,7 +7,7 @@ Run on 2026-10-04. Org `kybrion` (profile pinned via `UNIKRAFT_PROFILE`), metro 
 | # | Test | Result |
 | --- | --- | --- |
 | 1 | Instances running, private IP and `.internal` name | ✅ |
-| 2 | API → OpenFGA over `.internal`, `/bench` p50 < 10 ms warm | ✅ p50 1.0–1.3 ms |
+| 2 | API → OpenFGA over `.internal`, `/bench` p50 < 10 ms warm | ✅ p50 1.0–1.3 ms; 0.74–0.87 ms with the Effect API |
 | 3 | No OpenFGA (or Postgres) port reachable from the internet; no key → rejected | ✅ |
 | 4 | Redeploy (delete + run): IPs change, `.internal` keeps working with no config change | ✅ IPs changed and were reused across instances |
 | 5 | `fga model test` against the deployed instance through the tunnel | ✅ 10/10 tests, 31/31 checks (before and after redeploy) |
@@ -183,6 +183,21 @@ Things the suite surfaced:
 - `ListUsers`, like `ListObjects`, errors when a reachable condition is missing context.
 - `ReadChanges` compares `start_time` with the server's clock; the tunnel exposed client/server clock skew.
 - Over the tunnel: three targets in one `unikraft instances tunnel` fail; parallel load causes `ECONNRESET`, so files run serially (51/51 in 3 consecutive runs). Killing a tunnel with two signals left three relays running and public; they were deleted, and `tunnel.sh` now stops each tunnel with exactly one SIGTERM (relays gone in ~2 s).
+
+## API on Effect 4 and the OpenFGA SDK (2026-10-05)
+
+The API was rebuilt on Effect 4.0.0 (`HttpApi`) and `@openfga/sdk` 0.9.7, bundled into one 976 KB `.mjs` file. Only `demo-fga-api` was replaced; OpenFGA, Postgres and the store stayed up. `verify.sh` now checks the answers, not only the status codes, and calls `/batch-check` and `/list-objects`.
+
+| | Before (`node:http` + `fetch`) | After (Effect + SDK) |
+| --- | --- | --- |
+| `verify.sh` | all checks passed | all checks passed |
+| `/bench` p50 (3 runs, n=100) | 1.378 / 1.111 / 1.166 ms | 0.866 / 0.801 / 0.741 ms |
+| `/bench` p95 | 4.669 / 2.173 / 2.677 ms | 1.745 / 5.471 / 1.948 ms |
+| RSS idle → after 3 benches | 26.2 → 34.2 MiB | 25.4 → 35.3 MiB |
+| Standby after the last request | yes | yes, about 14 s later (after the fix below) |
+| `/health` from a fresh connection: woken from standby / warm | n/a | 0.75–0.80 s / 0.49–0.60 s |
+
+The first deployment never went to standby: after 251 s idle it was still `running`. Under scale-to-zero policy `on`, an instance stays up while any TCP connection is open. The SDK creates `http.Agent({ keepAlive: true })` with no idle timeout, so its pooled connections to OpenFGA never closed (the old `fetch` client drops idle ones after about 4 s). The API now passes agents that close idle sockets after 4 s, and `server.test.ts` checks that no idle connection to OpenFGA is left after 5 s; that test fails without the fix.
 
 ## Build notes
 
