@@ -13,11 +13,11 @@ Example of OpenFGA (ReBAC, fine-grained authorization) running on Unikraft Cloud
 | OpenFGA | v1.21.0, `http://localhost:8080` (via Caddy), key `dev-key-1` | v1.21.0, `demo-fga-openfga.internal:8080`, no public port; tunnel: `localhost:18080` |
 | Playground | optional `--profile playground`: `http://localhost:8082/playground`, its API `localhost:8090` without auth | disabled |
 | PostgreSQL | 17.2, host port 5435 | 16.4, `demo-fga-postgres.internal:5432`, volume `demo-fga-pgdata` (512MiB) |
-| API | `cd api && FGA_KEY=dev-key-1 FGA_API_URL=http://localhost:8080 PORT=3001 npm start` | `demo-fga-api`, public HTTPS 443→8080: `/health`, `/check`, `/bench` |
+| API | `cd api && FGA_KEY=dev-key-1 FGA_API_URL=http://localhost:8080 PORT=3001 npm start` | `demo-fga-api`, public HTTPS 443→8080: `/health`, `/check`, `/batch-check`, `/list-objects`, `/bench`, `/openapi.json` |
 | Config | `authz/.env` (from `authz/.env.example`) | root `.env` (from `.env.example`): `UNIKRAFT_PROFILE`, `FGA_KEY`, `POSTGRES_PASSWORD`, optional `OPENFGA_DATASTORE_URI` |
 | Store | create with `fga store create` (no fixed ID) | `demo-fga`, created by `scripts/seed.sh`; the API finds it by name |
 
-Versions are pinned in `versions.env` (OpenFGA v1.21.0, fga CLI 0.8.1); `scripts/check-versions.sh` fails CI if the Dockerfile, compose file, CI or `docs/repos` disagree. Upgrade them together. Tooling: OpenFGA CLI `fga` (0.8.1, which embeds the same OpenFGA version), `unikraft` CLI 0.5.x (not the deprecated `kraft cloud`), Node.js 24 (runs `.ts` natively), Docker with BuildKit, jq. `nix develop` provides all of them except Docker.
+Versions are pinned in `versions.env` (OpenFGA v1.21.0, fga CLI 0.8.1); `scripts/check-versions.sh` fails CI if the Dockerfile, compose file, CI or `docs/repos` disagree. Upgrade them together. Tooling: OpenFGA CLI `fga` (0.8.1, which embeds the same OpenFGA version), `unikraft` CLI 0.5.x (not the deprecated `kraft cloud`), Node.js 24 (runs `.ts` natively), Docker with BuildKit, jq, Python 3, shellcheck, grpcurl. `nix develop` provides all of them except Docker.
 
 ## Skills
 
@@ -35,7 +35,7 @@ Codex, OpenCode and Mastra Code load them from `.agents/skills/`. Claude Code lo
 authz/                      local stack (compose, Caddyfile, .env.example) and FGA models
 authz/models/               fga.mod + modules (core, conditions, projects, tasks); one *.fga.yaml test file per feature
 authz/seed/tuples.yaml      synthetic tuples for the demo store
-api/                        server.ts, server.test.ts, Kraftfile, Dockerfile
+api/                        src/ (Effect 4 HttpApi + @openfga/sdk), server.test.ts, Kraftfile, Dockerfile (bundles to dist/server.mjs)
 infrastructure/unikraft/    openfga/ and postgres/ Kraftfiles and Dockerfiles
 scripts/                    env.sh (shared), build, deploy, tunnel, seed, test-remote, test-integration-remote, verify, cleanup, sync-agent-skills, check-* gates
 tests/integration/          OpenFGA integration suite (@openfga/sdk + node:test), its compose stack (ports 28080/28081/22112)
@@ -62,7 +62,7 @@ Checks to run after changes (all run in CI):
 ```bash
 fga model test --tests 'authz/models/*.fga.yaml'   # expect Tests 28/28, Checks 190/190, ListObjects 11/11, ListUsers 16/16
 python3 scripts/check-model-coverage.py          # every relation true+false, every type listed, 0 surviving mutants
-cd api && npm ci && npm run typecheck && npm test   # node:test against a stub OpenFGA
+cd api && npm ci && npm run typecheck && npm test   # builds the bundle, then node:test against a stub OpenFGA
 bash -n scripts/*.sh scripts/env.sh
 ./scripts/check-versions.sh
 docker compose -f tests/integration/docker-compose.yaml up -d --wait && (cd tests/integration && npm ci)
@@ -101,7 +101,7 @@ Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. 
 
 - Commit messages: `type(scope): subject` in the imperative, with a bulleted past-tense body; types `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `cicd`, `ai`; scopes `authz`, `api`, `infra`, `nix`. Full rules: [.agents/skills/git-commit-messages/SKILL.md](.agents/skills/git-commit-messages/SKILL.md).
 - Shell scripts: `#!/usr/bin/env bash`, source `scripts/env.sh`, pass `shellcheck -x -S warning`.
-- The API has no runtime dependencies (only `node:` modules and `fetch`); keep TypeScript to erasable syntax (`erasableSyntaxOnly`).
+- The API uses Effect 4 (`effect`, `@effect/platform-node`) and `@openfga/sdk`, pinned to exact versions; `npm run build` bundles them with esbuild into `api/dist/server.mjs`, the only file the unikernel ships. Import `@effect/platform-node/NodeHttpServer` and `/NodeRuntime` directly (the package index pulls in a Redis client). Keep TypeScript to erasable syntax (`erasableSyntaxOnly`) so `npm start` runs `src/main.ts` without a build. Endpoints, payloads and errors are declared once in `api/src/api.ts`; `server.test.ts` tests the bundle as a black box.
 - Model tests live next to `fga.mod` (the CLI refuses model files outside the test file's directory), one file per feature, marked `# feature:` in both the `.fga` and `.fga.yaml` files. Any model change must keep `scripts/check-model-coverage.py` green: add tests rather than exemptions; an exemption in `authz/models/coverage-exemptions.txt` needs a reason.
 - `docs/repos/` is reference material for reading OpenFGA internals: never edit it; update it with `git subtree pull --squash` (see `docs/repos/README.md`). The `AGENTS.md`, `CLAUDE.md` and Copilot instruction files inside it are upstream contributor rules and don't apply to this repo. It is listed in `.ignore`, so `rg`/search skip it by default; search it on purpose with an explicit path (`rg ListUsers docs/repos/openfga`).
 

@@ -45,7 +45,7 @@ internet ──HTTPS──▶ demo-fga-api (public, 443→8080)
 
 - Every instance gets a private IP and a private FQDN `<instance-name>.internal` on the account's internal network ([docs](https://unikraft.com/docs/platform/networking)). OpenFGA and Postgres publish no service, so none of their ports (8080 HTTP, 8081 gRPC, 3000 Playground, 2112 metrics, 5432) are reachable from the internet. The exception is an open `unikraft instances tunnel`, whose relay is publicly addressable ([details](#tunnels-create-publicly-addressable-relay-instances)). Internal traffic is unencrypted but never leaves the account's network.
 - OpenFGA requires a preshared key (`OPENFGA_AUTHN_METHOD=preshared`). The Playground is disabled in the cloud.
-- The API ([`api/server.ts`](api/server.ts)) finds OpenFGA by `.internal` name and the store by name (`demo-fga`), so it needs no IP or store ID and survives redeploys without config changes.
+- The API ([`api/src/`](api/src), Effect 4 + the official `@openfga/sdk`) finds OpenFGA by `.internal` name and the store by name (`demo-fga`), so it needs no IP or store ID and survives redeploys without config changes.
 - Postgres keeps its data on a 512 MiB volume that survives instance deletion.
 
 | Instance            | Image                     | Memory | Public          |
@@ -197,7 +197,12 @@ API endpoints:
 
 - `GET /health`: API status, OpenFGA reachability, what `demo-fga-openfga.internal` resolves to, and process memory.
 - `GET /check?user=user:alice&relation=can_edit&object=project:roadmap`: one Check.
+- `POST /batch-check` with `{"checks":[{"correlationId":"a","user":"…","relation":"…","object":"…"}]}`: 1 to 50 Checks in one call.
+- `GET /list-objects?user=user:alice&relation=can_view&type=project`: the objects of a type the user can reach.
 - `GET /bench[?n=100&user=&relation=&object=]`: up to 100 sequential Checks after 3 warm-up calls; returns p50/p95/max/min/mean in ms.
+- `GET /openapi.json`: the OpenAPI document, generated from the same schemas that validate requests.
+
+Errors are JSON, `{"_tag": "…", "message": "…"}`: `BadRequest` (400, including invalid query or body), `Busy` (429, a bench is already running) and `UpstreamError` (502, OpenFGA failed or timed out after 5 s, with its HTTP status in the message).
 
 ### Redeploy
 
@@ -232,14 +237,17 @@ unikraft images delete <org>/demo-fga-api:latest
 
 | Pattern | Where | Why |
 | --- | --- | --- |
-| Private service + public API over `<name>.internal` | [`scripts/deploy.sh`](scripts/deploy.sh), [`api/server.ts`](api/server.ts) | No public port on the backend; names survive redeploys, IPs don't. |
+| Private service + public API over `<name>.internal` | [`scripts/deploy.sh`](scripts/deploy.sh), [`api/src/config.ts`](api/src/config.ts) | No public port on the backend; names survive redeploys, IPs don't. |
 | Secrets through `unikraft run --load` | [`scripts/deploy.sh`](scripts/deploy.sh) | `-e KEY=VALUE` puts secrets in the process list; a 0600 YAML spec doesn't. |
 | Pin the CLI profile in scripts | [`scripts/env.sh`](scripts/env.sh) | Scripts can't act on another account just because a different profile is active. |
 | Resource-name prefix guard | [`scripts/cleanup.sh`](scripts/cleanup.sh) | Cleanup refuses to touch anything outside `demo-fga-*` on a shared account. |
 | Two-step build: local OCI archive, then push | [`scripts/build.sh`](scripts/build.sh) | Avoids `failed to package kernel … connection reset by peer`. |
 | One-off migration instance on the private network | [`scripts/deploy.sh`](scripts/deploy.sh) | No database port exposed for migrations; the deploy stops unless it exits 0. |
 | `fga model test` against a deployed store | [`scripts/test-remote.sh`](scripts/test-remote.sh) | The same test files run locally and against the deployed server's evaluation (the CLI sends test tuples as contextual tuples, so stored-tuple reads are covered by integration tests instead). |
-| Store lookup by name with a short cache | [`api/server.ts`](api/server.ts) | Recreated stores are picked up without restarting the API. |
+| Store lookup by name with a short cache | [`api/src/openfga.ts`](api/src/openfga.ts) | Recreated stores are picked up without restarting the API. |
+| OpenFGA SDK as an Effect service | [`api/src/openfga.ts`](api/src/openfga.ts) | One retry policy (SDK retries off), a timeout that cancels the request, and SDK errors mapped to typed API errors. |
+| One schema per endpoint for validation, errors and OpenAPI | [`api/src/api.ts`](api/src/api.ts) | The OpenAPI document can't drift from what the server accepts. |
+| Bundle to one file for a scratch rootfs | [`api/Dockerfile`](api/Dockerfile) | The unikernel ships Node and one `.mjs`, no `node_modules`. |
 
 ## Gotchas
 
