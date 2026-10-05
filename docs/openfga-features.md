@@ -4,7 +4,7 @@ Every OpenFGA modeling feature and API call this repository uses, each with the 
 
 Two test suites back this guide:
 
-- **Model tests** (`authz/models/*.fga.yaml`, run with `fga model test`): what the model allows. `scripts/check-model-coverage.py` requires an allowed and a denied check for every relation and kills every single-rule mutant of the model.
+- **Model tests** (`authz/models/*.fga.yaml`, run with `fga model test`): what the model allows, one behaviour per test, named "… should …" with GIVEN/WHEN/THEN comments. `scripts/check-model-coverage.py` requires an allowed and a denied check for every relation and kills every single-rule mutant of the model, including condition boundaries.
 - **Integration tests** (`tests/integration/*.test.ts`, `@openfga/sdk` against a real OpenFGA with PostgreSQL): every RPC, with stored tuples. `scripts/check-api-coverage.py` requires a passing `[rpc:<Name>]` test and OpenFGA's own metrics to show the call.
 
 Test names below are quoted exactly, so you can search for them.
@@ -51,7 +51,7 @@ type project
     define member: owner or contributor or viewer
 ```
 
-Tests: [projects.fga.yaml](../authz/models/projects.fga.yaml), "Owner has full control", "Contributor edits, viewer reads", "Outsiders get nothing". Docs: [Configuration language](https://openfga.dev/docs/configuration-language).
+Tests: [projects.fga.yaml](../authz/models/projects.fga.yaml), "a project owner should have full control", "a contributor should edit but not manage the project", "an outsider should get nothing on the project". Docs: [Configuration language](https://openfga.dev/docs/configuration-language).
 
 ### Inheritance from a parent object (`from`)
 
@@ -61,13 +61,14 @@ Tests: [projects.fga.yaml](../authz/models/projects.fga.yaml), "Owner has full c
 type list
   relations
     define project: [project]
-    define can_edit: owner or collaborator or can_edit from project
-    define can_view: member or can_view from project
+    define is_blocked: is_blocked from project
+    define can_edit: (owner or collaborator or can_edit from project) but not is_blocked
+    define can_view: (member or can_view from project) but not is_blocked
 ```
 
-Lists inherit the project's *permissions* (`can_view`), not its raw roles (`member`). Inheriting `member` would let a user blocked on the project still view its lists; mutation testing found this bug while the model was written.
+Lists inherit the project's *permissions* (`can_view`), not its raw roles (`member`). Inheriting `member` would let a user blocked on the project still view its lists; mutation testing found this bug while the model was written. The project's block is also passed down (`is_blocked from project`), so it overrides direct list grants too, and tasks do the same through their list.
 
-Tests: "Lists inherit from their project", "Blocks also apply to everything inherited from the project", "Project contributors edit tasks through the list, viewers only read". Docs: [Parent-child objects](https://openfga.dev/docs/modeling/parent-child).
+Tests: "a project contributor should edit the project's lists", "a block on the project should override a direct list grant", "a list collaborator should edit and comment on the list's tasks but not complete them". Docs: [Parent-child objects](https://openfga.dev/docs/modeling/parent-child).
 
 ### Groups: usersets and nested teams
 
@@ -87,7 +88,7 @@ type team
 - { user: user:sam, relation: member, object: team:sre }
 ```
 
-Tests: [core.fga.yaml](../authz/models/core.fga.yaml), "Members of a sub-team are members of the parent team"; [projects.fga.yaml](../authz/models/projects.fga.yaml), "Project roles can be granted to whole teams". Docs: [User groups](https://openfga.dev/docs/modeling/user-groups).
+Tests: [core.fga.yaml](../authz/models/core.fga.yaml), "a member two levels down should be a member of every team above", "a membership cycle between teams should resolve without granting outsiders"; [projects.fga.yaml](../authz/models/projects.fga.yaml), "a member of a contributing team should edit the project". Docs: [User groups](https://openfga.dev/docs/modeling/user-groups).
 
 ### Recursion: folders inside folders
 
@@ -97,24 +98,33 @@ A relation can follow the same type: a folder's viewers include its parent's vie
 type folder
   relations
     define parent: [folder]
+    define manager: owner or manager from parent
     define editor: [user, team#member] or owner or editor from parent
     define viewer: [user, team#member, team#member with non_expired_grant] or editor or viewer from parent
 ```
 
+Owners of a folder, or of any folder above it, manage the projects inside (`project#can_manage` includes `manager from folder`).
+
 OpenFGA stops runaway recursion: on a cold cache, a check that has to resolve 25 levels fails with `authorization_model_resolution_too_complex` (24 levels resolve). Once shallower answers are cached, deeper checks can succeed. `ListObjects` isn't limited the same way.
 
-Tests: [nesting.fga.yaml](../authz/models/nesting.fga.yaml), "Grants on a folder reach every sub-folder and project below it"; integration, "[rpc:Check] resolves deep nesting but stops runaway recursion".
+Tests: [nesting.fga.yaml](../authz/models/nesting.fga.yaml), "a folder owner should manage, edit and share projects in any sub-folder", "folder access should carry on to the project's lists and tasks"; integration, "[rpc:Check] resolves deep nesting but stops runaway recursion".
 
 ### Exclusion (`but not`)
 
-`but not` removes access. With parentheses, a block on the project *or* in the org overrides every grant, including the owner's:
+`but not` removes access. A block on the project, in its org, or in the org of its folder overrides every grant, including the owner's. Naming the combined block (`is_blocked`) lets lists and tasks exclude it too:
 
 ```fga
-define can_edit: (contributor or editor from folder or can_manage) but not (blocked or blocked from org)
-define can_view: (member or viewer from folder or can_manage) but not (blocked or blocked from org)
+# folder: blocked in this folder's org or in the org of any folder above
+define blocked_in_org: blocked from org or blocked_in_org from parent
+# project
+define is_blocked: blocked or blocked from org or blocked_in_org from folder
+define can_edit: (contributor or editor from folder or can_manage) but not is_blocked
+define can_view: (member or viewer from folder or can_manage) but not is_blocked
 ```
 
-Tests: [exclusion.fga.yaml](../authz/models/exclusion.fga.yaml), "Blocked on the project removes edit and view, even for the owner", "Blocked in the org removes access to the org's projects". Docs: [Blocklists](https://openfga.dev/docs/modeling/blocklists).
+`can_manage` isn't excluded, so a blocked owner or admin can still unblock.
+
+Tests: [exclusion.fga.yaml](../authz/models/exclusion.fga.yaml), "a blocked owner should lose edit and view but keep can_manage", "a contributor blocked in the org should lose access to the org's projects", "a block in the folder's org should apply to a project without an org", "a block in the org should override a direct task grant". Docs: [Blocklists](https://openfga.dev/docs/modeling/blocklists).
 
 ### Intersection (`and`)
 
@@ -124,7 +134,7 @@ Tests: [exclusion.fga.yaml](../authz/models/exclusion.fga.yaml), "Blocked on the
 define can_share: can_edit and member from org
 ```
 
-Tests: [intersection.fga.yaml](../authz/models/intersection.fga.yaml), "Both sides of the intersection are required". The integration suite also has a regression test for a ListUsers bug with this shape, "[rpc:ListUsers] never returns a blocked user (regression, CVE-2026-61709: wildcard + and + but not)".
+Tests: [intersection.fga.yaml](../authz/models/intersection.fga.yaml), "an editor who is an org member should share the project", "an editor who isn't an org member should not share the project", "an org member who can't edit should not share the project". The integration suite also has a regression test for a ListUsers bug with this shape, "[rpc:ListUsers] never returns a blocked user (regression, CVE-2026-61709: wildcard + and + but not)".
 
 ### Public access (`user:*`)
 
@@ -139,9 +149,9 @@ define viewer: [user, team#member, user:*, user:* with non_expired_grant]
 - { user: user:*, relation: viewer, object: project:handbook }
 ```
 
-Blocks still apply: `can_view` is `... but not blocked`. ListUsers returns the wildcard itself (`{ wildcard: { type: 'user' } }`), not a list of users.
+Blocks still apply: `can_view` is `... but not is_blocked`. ListUsers returns the wildcard itself (`{ wildcard: { type: 'user' } }`), not a list of users, and can't say which users are blocked, so check a specific user with Check.
 
-Tests: [public-access.fga.yaml](../authz/models/public-access.fga.yaml), "Anyone can view a public project, except blocked users", "A public grant can expire". Docs: [Public access](https://openfga.dev/docs/modeling/public-access).
+Tests: [public-access.fga.yaml](../authz/models/public-access.fga.yaml), "anyone should view a public project", "a user blocked in the org should not view the org's public project", "nobody should view a time-limited public project before the grant starts", "listing a public project's users should return the wildcard, even with blocked users". Docs: [Public access](https://openfga.dev/docs/modeling/public-access).
 
 ### Conditions (ABAC with CEL)
 
@@ -149,7 +159,7 @@ A condition is a CEL expression on a grant. Its parameters come from the tuple (
 
 ```fga
 condition non_expired_grant(current_time: timestamp, grant_time: timestamp, grant_duration: duration) {
-  current_time < grant_time + grant_duration
+  current_time >= grant_time && current_time < grant_time + grant_duration
 }
 condition from_office_network(user_ip: ipaddress, office_cidr: string) {
   user_ip.in_cidr(office_cidr)
@@ -177,9 +187,9 @@ await fga.check({ user: 'user:remy', relation: 'can_edit', object: 'project:road
 // { allowed: true }; with user_ip 203.0.113.9: { allowed: false }
 ```
 
-A check, ListObjects or ListUsers that reaches a condition without all of its parameters fails with a validation error. It does not answer `false`, so send the context for every condition the query can reach.
+A check, ListObjects or ListUsers that reaches a condition without all of its parameters fails with a validation error. It does not answer `false`, so send the context for every condition the query can reach. Parameters stored on the tuple win over the same names in the request: sending `office_cidr: "0.0.0.0/0"` can't widen remy's grant.
 
-Tests: [conditions.fga.yaml](../authz/models/conditions.fga.yaml), one test per parameter type; integration, "[rpc:Check] evaluates conditions with request context, also with the check cache on (regression, v1.13.1)", "[rpc:Check] fails when a condition is missing its context", "[rpc:ListObjects] fails when a reachable condition is missing its context", "[rpc:ListUsers] fails when a reachable condition is missing its context". Docs: [Conditions](https://openfga.dev/docs/modeling/conditions).
+Tests: [conditions.fga.yaml](../authz/models/conditions.fga.yaml), "a team's temporary folder access should start exactly at grant_time", "… should end exactly at grant_time plus duration", "the office network should include both ends of its CIDR range", "nobody should export when the plan doesn't mention the feature", "a request should not be able to widen the network stored on the grant", "a team's temporary folder access should reach sub-folders, projects, lists and tasks while live"; integration, "[rpc:Check] evaluates conditions with request context, also with the check cache on (regression, v1.13.1)", "[rpc:Check] fails when a condition is missing its context", "[rpc:ListObjects] fails when a reachable condition is missing its context", "[rpc:ListUsers] fails when a reachable condition is missing its context". Docs: [Conditions](https://openfga.dev/docs/modeling/conditions).
 
 ### Modular models and `extend type`
 
@@ -197,12 +207,12 @@ extend type project
   relations
     define can_create_task: can_edit
     define exporter: [org#member with plan_allows]
-    define can_export: exporter and can_view
+    define can_export: exporter and can_view and member from org
 ```
 
 `fga model write --file authz/models/fga.mod` writes the combined model. `fga model test` only accepts model files in the test file's own directory, which is why the tests sit next to the manifest.
 
-Tests: [tasks.fga.yaml](../authz/models/tasks.fga.yaml), "The tasks module extends project with can_create_task". Docs: [Modular models](https://openfga.dev/docs/modeling/modular-models).
+Tests: [tasks.fga.yaml](../authz/models/tasks.fga.yaml), "a project editor should create tasks"; [conditions.fga.yaml](../authz/models/conditions.fga.yaml), "an exporter from another org should not export". Docs: [Modular models](https://openfga.dev/docs/modeling/modular-models).
 
 ## Calling OpenFGA from TypeScript
 

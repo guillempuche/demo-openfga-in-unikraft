@@ -344,30 +344,30 @@ A project-management domain, org → team → folder → project → list → ta
 - `fga.mod`: manifest listing the modules.
 - `core.fga`: users, organizations (admins, members, blocked users) and nested teams.
 - `conditions.fga`: the CEL conditions (expiring grants, office network, allowed regions, plan features).
-- `projects.fga`: nested folders, projects (roles, public access, blocking, sharing) and lists.
+- `projects.fga`: nested folders, projects (roles, public access, blocking, sharing) and lists. A block on a project, in its org or in its folder's org also overrides direct list and task grants.
 - `tasks.fga`: tasks, plus project permissions added with `extend type`.
 
-Each feature has its own test file next to the manifest, all testing the same model. [docs/openfga-features.md](docs/openfga-features.md) walks through each one with the SDK calls that use it:
+Each feature has its own test file next to the manifest, all testing the same model. Every test checks one behaviour, is named "… should …" and spells out GIVEN/WHEN/THEN in comments. [docs/openfga-features.md](docs/openfga-features.md) walks through each one with the SDK calls that use it:
 
 | Feature | Where in the model | Tests |
 | --- | --- | --- |
 | Direct relations, computed relations, inheritance (`from`) | `project`, `list`, `task` | [projects.fga.yaml](authz/models/projects.fga.yaml), [tasks.fga.yaml](authz/models/tasks.fga.yaml) |
 | Group membership (`team#member`) and nested teams | `team#member`, folder/project roles | [core.fga.yaml](authz/models/core.fga.yaml) |
 | Recursion (folders inside folders) | `folder#parent` | [nesting.fga.yaml](authz/models/nesting.fga.yaml) |
-| Exclusion (`but not`) with grouping | `project#can_edit`, `project#can_view` | [exclusion.fga.yaml](authz/models/exclusion.fga.yaml) |
+| Exclusion (`but not`) with grouping, passed down to lists and tasks | `project#is_blocked`, `can_edit`/`can_view` on project, list and task | [exclusion.fga.yaml](authz/models/exclusion.fga.yaml) |
 | Intersection (`and`) | `project#can_share`, `project#can_export` | [intersection.fga.yaml](authz/models/intersection.fga.yaml) |
 | Public access (`user:*`), permanent and expiring | `project#viewer` | [public-access.fga.yaml](authz/models/public-access.fga.yaml) |
 | Conditions: timestamp, duration, ipaddress, `list<string>`, `map<string>`; on users, usersets and wildcards; mixed with plain grants | `conditions.fga` | [conditions.fga.yaml](authz/models/conditions.fga.yaml) |
 | Modules and `extend type` | `fga.mod`, `tasks.fga` | [tasks.fga.yaml](authz/models/tasks.fga.yaml) |
 
-`scripts/check-model-coverage.py` (run in CI) fails unless every relation has a passing allowed and denied check, every type has `list_objects` and `list_users` assertions, and every single-rule break of the model (a "mutant": a dropped `or` branch, `and` turned into `or`, a dropped `but not`, a dropped allowed type, a negated condition) makes a test fail. It caught a real bug while the model was written: lists inherited project *membership*, which let a user blocked on a project still view its lists.
+`scripts/check-model-coverage.py` (run in CI) fails unless every relation has a passing allowed and denied check, every type has `list_objects` and `list_users` assertions, and every single-rule break of the model (a "mutant": a dropped `or` branch, `and` turned into `or`, a dropped `but not`, a dropped allowed type, a negated condition, a moved condition boundary such as `<` → `<=`, a dropped side of a condition's `&&`) makes a test fail. It caught a real bug while the model was written: lists inherited project *membership*, which let a user blocked on a project still view its lists.
 
 With `FGA_API_URL`, `FGA_API_TOKEN` and `FGA_STORE_ID` exported (see [Quick start](#quick-start-local)):
 
 ```bash
 fga model write --file authz/models/fga.mod     # new authorization_model_id per write
 fga model get                                   # the combined model
-fga model test --tests 'authz/models/*.fga.yaml'   # expect Tests 28/28, Checks 190/190, ListObjects 11/11, ListUsers 16/16
+fga model test --tests 'authz/models/*.fga.yaml'   # expect Tests 109/109, Checks 323/323, ListObjects 14/14, ListUsers 17/17
 python3 scripts/check-model-coverage.py          # coverage gate + mutation testing
 fga model transform --file authz/models/fga.mod > model.json   # combined model as JSON
 ```
