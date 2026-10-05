@@ -85,9 +85,18 @@ jobs:
         run: docker compose -f tests/integration/docker-compose.yaml logs openfga | tail -100
 
   api-image:
-    name: API rootfs builds
+    name: API rootfs builds and starts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       # The same Dockerfile the Kraftfile uses for the unikernel rootfs.
-      - run: docker build --tag demo-fga-api-rootfs api
+      - run: docker build --platform linux/amd64 --tag demo-fga-api-rootfs api
+      # Start the rootfs's Node on the bundle, as the unikernel does, with no
+      # OpenFGA behind it: the API must still start and answer /health.
+      - name: Smoke-test the image
+        run: |
+          docker run -d --name api -p 127.0.0.1:8080:8080 -e FGA_KEY=smoke -e FGA_API_URL=http://127.0.0.1:1 \
+            demo-fga-api-rootfs /usr/bin/node /usr/src/server.mjs
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/health && exit 0; sleep 1; done
+          docker logs api
+          exit 1
