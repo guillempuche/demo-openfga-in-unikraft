@@ -25,21 +25,31 @@ const ApiLive = HttpApiBuilder.layer(Api).pipe(Layer.provide([HealthLive, AuthzL
 
 const OpenApiJsonLive = HttpRouter.add('GET', '/openapi.json', HttpServerResponse.json(OpenApi.fromApi(Api)))
 
-// Effect answers a request that fails schema validation with an empty 400.
-// Give clients a JSON body in the same shape as the API's own errors, saying
-// which part of the request was invalid.
+// Effect answers a request that fails schema validation with an empty 400,
+// and a body that isn't JSON with a plain-text 415. Give clients a JSON body in
+// the same shape as the API's own errors, saying what was wrong.
 const InvalidRequestsAsJson = HttpRouter.middleware(
   HttpMiddleware.make((app) =>
-    Effect.catchCause(app, (cause): Effect.Effect<HttpServerResponse.HttpServerResponse, unknown> => {
-      // The builder reports a schema failure as a defect; squash finds it either way.
-      const err = Cause.squash(cause)
-      return HttpApiError.HttpApiSchemaError.is(err)
-        ? HttpServerResponse.json(
-            { _tag: 'BadRequest', message: `invalid ${err.kind.toLowerCase()}: ${err.cause.message}` },
-            { status: 400 },
-          )
-        : Effect.failCause(cause)
-    }),
+    app.pipe(
+      Effect.map((res) =>
+        res.status === 415
+          ? HttpServerResponse.jsonUnsafe(
+              { _tag: 'BadRequest', message: 'unsupported content-type: send application/json' },
+              { status: 415 },
+            )
+          : res,
+      ),
+      Effect.catchCause((cause): Effect.Effect<HttpServerResponse.HttpServerResponse, unknown> => {
+        // The builder reports a schema failure as a defect; squash finds it either way.
+        const err = Cause.squash(cause)
+        return HttpApiError.HttpApiSchemaError.is(err)
+          ? HttpServerResponse.json(
+              { _tag: 'BadRequest', message: `invalid ${err.kind.toLowerCase()}: ${err.cause.message}` },
+              { status: 400 },
+            )
+          : Effect.failCause(cause)
+      }),
+    ),
   ),
   { global: true },
 )

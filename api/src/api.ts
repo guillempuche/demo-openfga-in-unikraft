@@ -28,14 +28,36 @@ const Consistency = Schema.Literals(['MINIMIZE_LATENCY', 'HIGHER_CONSISTENCY'])
 
 export const CheckView = Schema.Struct({ ...TupleFields, allowed: Schema.Boolean, ms: Schema.Number })
 
+// Correlation ids key OpenFGA's reply, so a repeated one is rejected up front
+// rather than leaving one of the two checks without an answer.
+const UniqueCorrelationIds = Schema.makeFilter((checks: ReadonlyArray<{ readonly correlationId: string }>) => {
+  const seen = new Set<string>()
+  return checks.flatMap(({ correlationId }, i) => {
+    if (!seen.has(correlationId)) {
+      seen.add(correlationId)
+      return []
+    }
+    return [{ path: [i, 'correlationId'], issue: `duplicate correlationId "${correlationId}"` }]
+  })
+})
+
 export const BatchCheckInput = Schema.Struct({
   checks: Schema.Array(Schema.Struct({ ...TupleFields, correlationId: Schema.NonEmptyString })).check(
     Schema.isMinLength(1),
     Schema.isMaxLength(50),
+    UniqueCorrelationIds,
   ),
 })
+
+// Each item has either a decision or the reason OpenFGA gave none (it failed
+// to evaluate that item, or left it out of its reply). Never both.
 export const BatchCheckView = Schema.Struct({
-  results: Schema.Array(Schema.Struct({ correlationId: Schema.String, allowed: Schema.Boolean })),
+  results: Schema.Array(
+    Schema.Union([
+      Schema.Struct({ correlationId: Schema.String, allowed: Schema.Boolean }),
+      Schema.Struct({ correlationId: Schema.String, error: Schema.String }),
+    ]),
+  ),
 })
 
 export const ListObjectsView = Schema.Struct({ objects: Schema.Array(Schema.String) })
@@ -79,7 +101,7 @@ export const AuthzGroup = HttpApiGroup.make('authz')
   )
 
 // Optional query values stay strings and are parsed leniently in the handler
-// (`n=abc` means the default, `n=1.5` means 1), as before the rewrite.
+// (`n=abc` means the default, `n=1.5` means 1, `n=0` means 1).
 export const BenchGroup = HttpApiGroup.make('bench').add(
   HttpApiEndpoint.get('bench', '/bench', {
     query: {

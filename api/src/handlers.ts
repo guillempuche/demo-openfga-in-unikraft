@@ -54,6 +54,13 @@ export const AuthzLive = HttpApiBuilder.group(Api, 'authz', (handlers) =>
 
 const BENCH_MAX = 100
 
+// `n` without a number (missing, empty, `abc`) means BENCH_MAX; a number is
+// truncated and clamped to 1..BENCH_MAX, so `n=0` or `n=0.5` runs one check.
+const benchSize = (raw: string | undefined) => {
+  const n = raw === undefined || raw.trim() === '' ? NaN : Number(raw)
+  return Number.isFinite(n) ? Math.min(Math.max(Math.trunc(n), 1), BENCH_MAX) : BENCH_MAX
+}
+
 // /bench is public and unauthenticated, so it bounds the work one request can
 // cause: at most BENCH_MAX checks, and one run at a time.
 export const BenchLive = HttpApiBuilder.group(Api, 'bench', (handlers) =>
@@ -61,7 +68,7 @@ export const BenchLive = HttpApiBuilder.group(Api, 'bench', (handlers) =>
     const fga = yield* OpenFga
     let running = false
     return handlers.handle('bench', ({ query }) => {
-      const n = Math.min(Math.max(Math.trunc(Number(query.n ?? BENCH_MAX)) || BENCH_MAX, 1), BENCH_MAX)
+      const n = benchSize(query.n)
       const tuple = {
         user: query.user ?? 'user:alice',
         relation: query.relation ?? 'can_edit',
