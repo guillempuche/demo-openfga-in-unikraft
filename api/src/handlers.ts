@@ -1,7 +1,10 @@
 import { lookup } from 'node:dns/promises'
-import { Effect } from 'effect'
+import { isIP } from 'node:net'
+import { Clock, Duration, Effect, Option, Semaphore } from 'effect'
+import type { HttpServerRequest } from 'effect/http'
 import { HttpApiBuilder } from 'effect/http-api'
 import { Api } from './api.ts'
+import { AppConfig } from './config.ts'
 import { Busy } from './errors.ts'
 import { OpenFga } from './openfga.ts'
 
@@ -32,22 +35,63 @@ export const HealthLive = HttpApiBuilder.group(Api, 'health', (handlers) =>
           resolved,
           openfgaMs: round(performance.now() - started),
           memoryMiB: { rss: round(memory.rss / 1048576), heapUsed: round(memory.heapUsed / 1048576) },
+          model: yield* fga.model,
         }
       }),
     )
   }),
 )
 
+// The client's address, or undefined when it can't be known. In
+// x-forwarded-for mode only the last entry counts (the one the nearest proxy
+// added; earlier ones come from the client), and a missing header never falls
+// back to the TCP peer, which is then the proxy. An address that isn't
+// well-formed is dropped too. An IPv4-mapped one (::ffff:10.0.0.1) is kept:
+// OpenFGA unmaps it.
+const clientIp = (request: HttpServerRequest.HttpServerRequest, from: 'socket' | 'x-forwarded-for') => {
+  const ip =
+    from === 'x-forwarded-for'
+      ? request.headers['x-forwarded-for']?.split(',').at(-1)?.trim()
+      : Option.getOrUndefined(request.remoteAddress)
+  return ip && isIP(ip) ? ip : undefined
+}
+
 export const AuthzLive = HttpApiBuilder.group(Api, 'authz', (handlers) =>
   Effect.gen(function* () {
     const fga = yield* OpenFga
+    const { clientIpFrom, currentTimeStep } = yield* AppConfig
+    const stepMs = Duration.toMillis(currentTimeStep)
+
+    // The condition parameters the API vouches for, sent with every check.
+    // Callers can't add any: a parameter a condition needs that isn't here
+    // (region, plan) stays missing, and OpenFGA refuses to decide that check.
+    const conditionContext = (request: HttpServerRequest.HttpServerRequest) =>
+      Effect.map(Clock.currentTimeMillis, (now) => {
+        const userIp = clientIp(request, clientIpFrom)
+        return {
+          current_time: new Date(Math.floor(now / stepMs) * stepMs).toISOString(),
+          ...(userIp ? { user_ip: userIp } : {}),
+        }
+      })
+
     return handlers
-      .handle('check', ({ query: { consistency, ...tuple } }) =>
-        fga.check(tuple, { consistency }).pipe(Effect.map(({ allowed, ms }) => ({ ...tuple, allowed, ms: round(ms) }))),
+      .handle('check', ({ request, query: { consistency, ...tuple } }) =>
+        conditionContext(request).pipe(
+          Effect.flatMap((context) => fga.check(tuple, { consistency, context })),
+          Effect.map(({ allowed, ms }) => ({ ...tuple, allowed, ms: round(ms) })),
+        ),
       )
-      .handle('batchCheck', ({ payload }) => fga.batchCheck(payload.checks).pipe(Effect.map((results) => ({ results }))))
-      .handle('listObjects', ({ query }) =>
-        fga.listObjects(query.user, query.relation, query.type).pipe(Effect.map((objects) => ({ objects }))),
+      .handle('batchCheck', ({ request, payload }) =>
+        conditionContext(request).pipe(
+          Effect.flatMap((context) => fga.batchCheck(payload.checks, context)),
+          Effect.map((results) => ({ results })),
+        ),
+      )
+      .handle('listObjects', ({ request, query }) =>
+        conditionContext(request).pipe(
+          Effect.flatMap((context) => fga.listObjects(query.user, query.relation, query.type, context)),
+          Effect.map((objects) => ({ objects })),
+        ),
       )
   }),
 )
@@ -62,11 +106,12 @@ const benchSize = (raw: string | undefined) => {
 }
 
 // /bench is public and unauthenticated, so it bounds the work one request can
-// cause: at most BENCH_MAX checks, and one run at a time.
+// cause: at most BENCH_MAX checks, and one run at a time. Its checks carry no
+// condition context: they measure plain checks.
 export const BenchLive = HttpApiBuilder.group(Api, 'bench', (handlers) =>
   Effect.gen(function* () {
     const fga = yield* OpenFga
-    let running = false
+    const oneAtATime = yield* Semaphore.make(1)
     return handlers.handle('bench', ({ query }) => {
       const n = benchSize(query.n)
       const tuple = {
@@ -99,17 +144,16 @@ export const BenchLive = HttpApiBuilder.group(Api, 'bench', (handlers) =>
           target: fga.origin,
         }
       })
-      const acquire = Effect.suspend(() =>
-        running
-          ? Effect.fail(new Busy({ message: 'a bench is already running; try again shortly' }))
-          : Effect.sync(() => {
-              running = true
-            }),
+      // None when another run holds the permit. The permit is released however
+      // the run ends: success, failure, or interruption (client disconnect).
+      return Semaphore.withPermitsIfAvailable(oneAtATime, 1)(run).pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.fail(new Busy({ message: 'a bench is already running; try again shortly' })),
+            onSome: Effect.succeed,
+          }),
+        ),
       )
-      const release = Effect.sync(() => {
-        running = false
-      })
-      return acquire.pipe(Effect.andThen(run.pipe(Effect.ensuring(release))))
     })
   }),
 )

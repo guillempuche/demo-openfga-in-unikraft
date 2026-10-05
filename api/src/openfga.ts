@@ -1,11 +1,12 @@
 // OpenFGA as an Effect service, built on the official SDK (@openfga/sdk).
 //
-// - The store is found by name and its latest model pinned; both are cached
-//   for FGA_STORE_CACHE_TTL and dropped as soon as OpenFGA says the store or
-//   model is gone (OpenFGA soft-deletes stores: a deleted store still answers
-//   checks, so the TTL also catches a store that was recreated under the same
-//   name). Concurrent requests on a cold cache share one lookup; a failed
-//   lookup isn't cached.
+// - The store is found by name (or pinned with FGA_STORE_ID) and its model is
+//   the latest one (or pinned with FGA_MODEL_ID); the pair is cached for
+//   FGA_STORE_CACHE_TTL and dropped as soon as OpenFGA says the store or model
+//   is gone (OpenFGA soft-deletes stores: a deleted store still answers checks,
+//   so the TTL also catches a store that was recreated under the same name).
+//   Concurrent requests on a cold cache share one lookup, cancelled only when
+//   every one of them has gone away; a failed lookup isn't cached.
 // - One retry policy: the SDK's own retries are off, Effect retries once, and
 //   only failures a retry can fix (OpenFGA 5xx, network errors). Timeouts,
 //   4xx and invalid requests fail at once. Effect's timeout cancels the HTTP
@@ -14,7 +15,8 @@
 //   else (network, 5xx, auth to OpenFGA) -> UpstreamError with the status.
 // - Idle connections to OpenFGA close after IDLE_SOCKET. The SDK's own agents
 //   keep them open forever, and with scale-to-zero policy `on` an open TCP
-//   connection keeps the API instance from going to standby.
+//   connection keeps the API instance from going to standby. Ours are
+//   destroyed when the service shuts down.
 
 import { Agent as HttpAgent } from 'node:http'
 import { Agent as HttpsAgent } from 'node:https'
@@ -28,7 +30,7 @@ import {
   OpenFgaClient,
   type ClientBatchCheckItem,
 } from '@openfga/sdk'
-import { Context, Deferred, Duration, Effect, Exit, Layer, Option, Redacted, Schedule } from 'effect'
+import { Cache, Context, Duration, Effect, Exit, Layer, Option, Redacted, Schedule } from 'effect'
 import { AppConfig } from './config.ts'
 import { BadRequest, UpstreamError } from './errors.ts'
 
@@ -95,15 +97,17 @@ export class OpenFga extends Context.Service<OpenFga>()('OpenFga', {
   make: Effect.gen(function* () {
     const config = yield* AppConfig
     const pinnedStoreId = Option.getOrUndefined(config.pinnedStoreId)
-    const storeTtlMs = Duration.toMillis(config.storeCacheTtl)
+    const pinnedModelId = Option.getOrUndefined(config.pinnedModelId)
+    const agentOptions = { keepAlive: true, timeout: Duration.toMillis(IDLE_SOCKET) }
+    const agent = <A extends HttpAgent>(make: () => A) => Effect.acquireRelease(Effect.sync(make), (a) => Effect.sync(() => a.destroy()))
     const client = new OpenFgaClient({
       apiUrl: config.fgaApiUrl.origin,
       credentials: { method: CredentialsMethod.ApiToken, config: { token: Redacted.value(config.fgaKey) } },
       retryParams: { maxRetry: 0 },
       // Spread into every request's axios config, replacing the SDK's agents.
       baseOptions: {
-        httpAgent: new HttpAgent({ keepAlive: true, timeout: Duration.toMillis(IDLE_SOCKET) }),
-        httpsAgent: new HttpsAgent({ keepAlive: true, timeout: Duration.toMillis(IDLE_SOCKET) }),
+        httpAgent: yield* agent(() => new HttpAgent(agentOptions)),
+        httpsAgent: yield* agent(() => new HttpsAgent(agentOptions)),
       },
     })
 
@@ -131,33 +135,21 @@ export class OpenFga extends Context.Service<OpenFga>()('OpenFga', {
             return match ? Effect.succeed(match.id) : Effect.fail(upstream(`store "${config.storeName}" not found`))
           }),
         ))
+      if (pinnedModelId) return { storeId, modelId: pinnedModelId }
       const models = yield* sdk('read models', (signal) =>
         client.readAuthorizationModels({ storeId, pageSize: 1, signal } as any),
       )
       return { storeId, modelId: models.authorization_models[0]?.id }
     })
 
-    let cached: { readonly target: Target; readonly at: number } | undefined
-    let inflight: Deferred.Deferred<Target, Failed> | undefined
-
-    // The cached target, or one shared lookup for every caller that finds the
-    // cache cold. The lookup runs detached, so a caller that goes away (client
-    // disconnect) doesn't cancel it for the others.
-    const target = Effect.suspend((): Effect.Effect<Target, Failed> => {
-      if (cached && Date.now() - cached.at < storeTtlMs) return Effect.succeed(cached.target)
-      if (inflight) return Deferred.await(inflight)
-      const done = Deferred.makeUnsafe<Target, Failed>()
-      inflight = done
-      const run = Effect.exit(lookup).pipe(
-        Effect.flatMap((exit) =>
-          Effect.sync(() => {
-            inflight = undefined
-            if (Exit.isSuccess(exit)) cached = { target: exit.value, at: Date.now() }
-          }).pipe(Effect.andThen(Deferred.done(done, exit))),
-        ),
-      )
-      return Effect.forkDetach(run).pipe(Effect.andThen(Deferred.await(done)))
+    // A single entry, the current target. Callers that find it missing or
+    // expired share one lookup; a failure gets a zero TTL, so the next caller
+    // looks up again.
+    const targets = yield* Cache.makeWith((_: 'target') => lookup, {
+      capacity: 1,
+      timeToLive: (exit) => (Exit.isSuccess(exit) ? config.storeCacheTtl : Duration.zero),
     })
+    const target = Cache.get(targets, 'target')
 
     // Run a call against the current store/model. If OpenFGA says they're gone,
     // drop the cache and try once more; transient upstream failures get one
@@ -168,18 +160,18 @@ export class OpenFga extends Context.Service<OpenFga>()('OpenFga', {
         sdk(what, (signal) => call(t, signal)).pipe(
           Effect.catchIf(
             (f) => isStoreGone(f.cause),
-            () => Effect.fail(new StoreGone()),
+            // Drop the entry only if it still holds the target that failed: a
+            // concurrent request may already have looked up a new one.
+            () =>
+              Cache.invalidateWhen(targets, 'target', (current) => current === t).pipe(
+                Effect.andThen(Effect.fail(new StoreGone())),
+              ),
           ),
         ),
       )
       return attempt.pipe(
         Effect.catchTag('StoreGone', () =>
-          Effect.sync(() => {
-            cached = undefined
-          }).pipe(
-            Effect.andThen(attempt),
-            Effect.catchTag('StoreGone', () => Effect.fail(upstream(`${what}: store or model not found`))),
-          ),
+          attempt.pipe(Effect.catchTag('StoreGone', () => Effect.fail(upstream(`${what}: store or model not found`)))),
         ),
         Effect.retry({ while: (f) => f.retryable, schedule: Schedule.exponential('50 millis'), times: 1 }),
         Effect.mapError((f) => f.error),
@@ -201,10 +193,10 @@ export class OpenFga extends Context.Service<OpenFga>()('OpenFga', {
     // Answers in request order. An item OpenFGA couldn't evaluate, or left out
     // of its reply, gets an error instead of a decision: reporting it as
     // allowed:false would hide the failure.
-    const batchCheck = (checks: ReadonlyArray<Tuple & { readonly correlationId: string }>) =>
+    const batchCheck = (checks: ReadonlyArray<Tuple & { readonly correlationId: string }>, context?: object) =>
       withTarget('batch check', (t, signal) =>
         client.batchCheck(
-          { checks: checks.map((c) => ({ ...c })) as ClientBatchCheckItem[] },
+          { checks: checks.map((c) => ({ ...c, context })) as ClientBatchCheckItem[] },
           { storeId: t.storeId, authorizationModelId: t.modelId, signal } as any,
         ),
       ).pipe(
@@ -221,9 +213,12 @@ export class OpenFga extends Context.Service<OpenFga>()('OpenFga', {
         }),
       )
 
-    const listObjects = (user: string, relation: string, type: string) =>
+    const listObjects = (user: string, relation: string, type: string, context?: object) =>
       withTarget('list objects', (t, signal) =>
-        client.listObjects({ user, relation, type }, { storeId: t.storeId, authorizationModelId: t.modelId, signal } as any),
+        client.listObjects(
+          { user, relation, type, context },
+          { storeId: t.storeId, authorizationModelId: t.modelId, signal } as any,
+        ),
       ).pipe(Effect.map((res) => res.objects))
 
     /** OpenFGA's own health endpoint; it reports SERVING only when its datastore is ready. */
@@ -236,7 +231,13 @@ export class OpenFga extends Context.Service<OpenFga>()('OpenFga', {
       Effect.catch((err) => Effect.succeed(`unreachable: ${err instanceof Error ? err.message : String(err)}`)),
     )
 
-    return { check, batchCheck, listObjects, health, host: config.fgaApiUrl.hostname, origin: config.fgaApiUrl.origin }
+    /** The model checks use, without triggering a lookup: null until one has succeeded. */
+    const model = Effect.map(Cache.getSuccess(targets, 'target'), (t) => ({
+      id: pinnedModelId ?? Option.getOrUndefined(t)?.modelId ?? null,
+      pinned: pinnedModelId !== undefined,
+    }))
+
+    return { check, batchCheck, listObjects, health, model, host: config.fgaApiUrl.hostname, origin: config.fgaApiUrl.origin }
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make)

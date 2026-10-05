@@ -6,6 +6,10 @@
 //
 // Target: FGA_API_URL / FGA_API_TOKEN, as in tests/integration/helpers.ts
 // (default: the compose stack).
+//
+// The API sends every check a context of its own (current_time, user_ip), so
+// the fixtures exercise conditions through it: a client address, a time
+// window, and a region the API never sends.
 
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
@@ -19,8 +23,9 @@ const BUNDLE = fileURLToPath(new URL('./dist/server.mjs', import.meta.url))
 const MANIFEST = fileURLToPath(new URL('../authz/models/fga.mod', import.meta.url))
 const OPENFGA_URL = process.env.FGA_API_URL ?? 'http://127.0.0.1:28080'
 const OPENFGA_TOKEN = process.env.FGA_API_TOKEN ?? 'integration-key'
-// A well-formed store id that no store has.
+// Well-formed ids that no store or model has.
 const MISSING_STORE = '01HX0000000000000000000000'
+const MISSING_MODEL = '01HX00000000000000000000M9'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -39,12 +44,12 @@ const demoModel = () =>
 
 const createdStores: string[] = []
 
-/** A new store, deleted after the run; with the demo model unless `withModel` is false. */
+/** A new store, deleted after the run; with the demo model (and its id) unless `withModel` is false. */
 async function createStore(label: string, withModel = true) {
   const { id } = await fgaClient().createStore({ name: `it-api-${label}-${Date.now()}` })
   createdStores.push(id)
-  if (withModel) await fgaClient(id).writeAuthorizationModel(demoModel())
-  return { id, fga: fgaClient(id) }
+  const modelId = withModel ? (await fgaClient(id).writeAuthorizationModel(demoModel())).authorization_model_id : undefined
+  return { id, modelId, fga: fgaClient(id) }
 }
 
 // --- the API under test ----------------------------------------------------
@@ -59,8 +64,13 @@ async function freePort(): Promise<number> {
   return port
 }
 
-/** Starts the API pinned to `storeId`; a store name that exists nowhere guards against lookups by name. */
-async function startApi(storeId: string): Promise<Api> {
+/**
+ * Starts the API pinned to `storeId`; a store name that exists nowhere guards
+ * against lookups by name. current_time moves in one-hour steps, so a test
+ * that relies on OpenFGA's check cache (keyed on the context) can't straddle
+ * a step boundary in practice.
+ */
+async function startApi(storeId: string, env: Record<string, string> = {}): Promise<Api> {
   const port = await freePort()
   let output = ''
   const proc = spawn(process.execPath, [BUNDLE], {
@@ -71,6 +81,8 @@ async function startApi(storeId: string): Promise<Api> {
       FGA_KEY: OPENFGA_TOKEN,
       FGA_STORE_ID: storeId,
       FGA_STORE_NAME: `it-api-unused-${Date.now()}`,
+      CURRENT_TIME_STEP: '1 hour',
+      ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -95,8 +107,8 @@ async function stopApi(api: Api | undefined) {
   await exited
 }
 
-async function withApi<T>(storeId: string, fn: (api: Api) => Promise<T>): Promise<T> {
-  const api = await startApi(storeId)
+async function withApi<T>(storeId: string, env: Record<string, string>, fn: (api: Api) => Promise<T>): Promise<T> {
+  const api = await startApi(storeId, env)
   try {
     return await fn(api)
   } finally {
@@ -109,14 +121,26 @@ async function request(api: Api, path: string, init?: RequestInit): Promise<{ st
   return { status: res.status, body: await res.json() }
 }
 
-const check = (api: Api, q: Record<string, string>) => request(api, `/check?${new URLSearchParams(q)}`)
+const check = (api: Api, q: Record<string, string>, headers: Record<string, string> = {}) =>
+  request(api, `/check?${new URLSearchParams(q)}`, { headers })
 const batchCheck = (api: Api, checks: unknown[]) =>
   request(api, '/batch-check', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ checks }) })
 
 // --- fixtures ----------------------------------------------------------------
 
-// alice owns project:roadmap, bob has nothing, carol contributes only from the
-// office network (a condition that needs the request's user_ip).
+const HOUR = 3_600_000
+const grantFrom = (start: number, duration: string) => ({
+  name: 'non_expired_grant',
+  context: { grant_time: new Date(start).toISOString(), grant_duration: duration },
+})
+
+// alice owns project:roadmap and bob has nothing. Conditional grants:
+// - carol contributes to roadmap only from the office network (user_ip);
+// - dan is an acme member only from an allowed region, a parameter the API
+//   never sends, so OpenFGA can't decide it;
+// - frank's team can view folder:launch for a window around now, and could
+//   view folder:archive for an hour three days ago (current_time). The window
+//   starts two hours back: current_time is rounded down to the hour.
 const STORED: ClientWriteRequest['writes'] = [
   { user: 'user:alice', relation: 'owner', object: 'project:roadmap' },
   {
@@ -125,6 +149,15 @@ const STORED: ClientWriteRequest['writes'] = [
     object: 'project:roadmap',
     condition: { name: 'from_office_network', context: { office_cidr: '10.20.0.0/16' } },
   },
+  {
+    user: 'user:dan',
+    relation: 'member',
+    object: 'org:acme',
+    condition: { name: 'in_allowed_regions', context: { allowed_regions: ['eu'] } },
+  },
+  { user: 'user:frank', relation: 'member', object: 'team:crew' },
+  { user: 'team:crew#member', relation: 'viewer', object: 'folder:launch', condition: grantFrom(Date.now() - 2 * HOUR, '4h') },
+  { user: 'team:crew#member', relation: 'viewer', object: 'folder:archive', condition: grantFrom(Date.now() - 72 * HOUR, '1h') },
 ]
 
 let api: Api
@@ -169,7 +202,7 @@ describe('GET /check against OpenFGA', () => {
       ['the relation is unknown', { user: 'user:alice', relation: 'nope', object: 'project:roadmap' }, /nope/],
       ['the type is unknown', { user: 'user:alice', relation: 'can_edit', object: 'nope:1' }, /nope/],
       ['the user is malformed', { user: 'alice', relation: 'can_edit', object: 'project:roadmap' }, /'user' field/],
-      ['a condition is missing its context', { user: 'user:carol', relation: 'can_edit', object: 'project:roadmap' }, /missing context parameters/],
+      ['a condition needs a parameter the API never sends', { user: 'user:dan', relation: 'member', object: 'org:acme' }, /missing context parameters '\[region\]'/],
     ]
     for (const [label, tuple, reason] of cases) {
       it(`should answer 400 with OpenFGA's message when ${label}`, async () => {
@@ -183,6 +216,65 @@ describe('GET /check against OpenFGA', () => {
         assert.match(body.message, reason)
       })
     }
+  })
+
+  describe('when a grant depends on the client address', () => {
+    const carol = { user: 'user:carol', relation: 'can_edit', object: 'project:roadmap' }
+    let proxied: Api
+
+    before(async () => {
+      proxied = await startApi(store.id, { CLIENT_IP_FROM: 'x-forwarded-for' })
+    })
+
+    after(async () => {
+      await stopApi(proxied)
+    })
+
+    it('should deny it to a client outside the office network', async () => {
+      // GIVEN the main API, which sends the TCP peer (127.0.0.1) as user_ip
+      // WHEN checking carol's office-only grant
+      const { status, body } = await check(api, carol)
+      // THEN OpenFGA evaluates the condition and denies it
+      assert.equal(status, 200)
+      assert.equal(body.allowed, false)
+    })
+
+    it('should allow it to a client in the office network', async () => {
+      // GIVEN an API behind a proxy that reports carol at an office address
+      // WHEN checking her grant
+      const { status, body } = await check(proxied, carol, { 'x-forwarded-for': '10.20.1.2' })
+      // THEN it is allowed
+      assert.equal(status, 200)
+      assert.equal(body.allowed, true)
+    })
+
+    it('should deny it when only a forged earlier entry is in the office network', async () => {
+      // GIVEN a client that prepends an office address to what the proxy added
+      // WHEN checking carol's grant
+      const { body } = await check(proxied, carol, { 'x-forwarded-for': '10.20.1.2, 198.51.100.7' })
+      // THEN only the proxy's entry counts, and it is outside the office
+      assert.equal(body.allowed, false)
+    })
+  })
+
+  describe('when a grant is time-limited', () => {
+    it('should allow it inside its window', async () => {
+      // GIVEN frank's team can view folder:launch from two hours ago for four hours
+      // WHEN checking with the API's current_time
+      const { status, body } = await check(api, { user: 'user:frank', relation: 'viewer', object: 'folder:launch' })
+      // THEN OpenFGA accepts the timestamp and allows it
+      assert.equal(status, 200)
+      assert.equal(body.allowed, true)
+    })
+
+    it('should deny it after its window', async () => {
+      // GIVEN frank's team could view folder:archive for an hour, three days ago
+      // WHEN checking with the API's current_time
+      const { status, body } = await check(api, { user: 'user:frank', relation: 'viewer', object: 'folder:archive' })
+      // THEN it is denied
+      assert.equal(status, 200)
+      assert.equal(body.allowed, false)
+    })
   })
 
   describe('when a tuple was just written', () => {
@@ -230,7 +322,7 @@ describe('GET /check against OpenFGA', () => {
     it('should answer 502 "store or model not found"', async () => {
       // GIVEN a store without an authorization model
       const empty = await createStore('no-model', false)
-      await withApi(empty.id, async (fresh) => {
+      await withApi(empty.id, {}, async (fresh) => {
         // WHEN checking
         const { status, body } = await check(fresh, { user: 'user:alice', relation: 'can_edit', object: 'project:roadmap' })
         // THEN the API answers 502
@@ -242,7 +334,7 @@ describe('GET /check against OpenFGA', () => {
 
   describe('when the pinned store does not exist', () => {
     it('should answer 502', async () => {
-      await withApi(MISSING_STORE, async (fresh) => {
+      await withApi(MISSING_STORE, {}, async (fresh) => {
         // GIVEN an API pinned to a store id no store has
         // WHEN checking
         const { status, body } = await check(fresh, { user: 'user:alice', relation: 'can_edit', object: 'project:roadmap' })
@@ -259,12 +351,12 @@ describe('POST /batch-check against OpenFGA', () => {
     let res: { status: number; body: any }
 
     before(async () => {
-      // GIVEN alice can edit roadmap, bob can't, and carol's grant needs a context
+      // GIVEN alice can edit roadmap, bob can't, and dan's membership needs a region
       // WHEN checking all three in one batch
       res = await batchCheck(api, [
         { correlationId: 'alice', user: 'user:alice', relation: 'can_edit', object: 'project:roadmap' },
         { correlationId: 'bob', user: 'user:bob', relation: 'can_edit', object: 'project:roadmap' },
-        { correlationId: 'carol', user: 'user:carol', relation: 'can_edit', object: 'project:roadmap' },
+        { correlationId: 'dan', user: 'user:dan', relation: 'member', object: 'org:acme' },
       ])
     })
 
@@ -278,11 +370,29 @@ describe('POST /batch-check against OpenFGA', () => {
     })
 
     it("should report the item OpenFGA couldn't evaluate with its error", () => {
-      // THEN carol's item carries the missing-context error and no decision
-      const carol = res.body.results[2]
-      assert.equal(carol.correlationId, 'carol')
-      assert.equal(carol.allowed, undefined)
-      assert.match(carol.error, /missing context parameters/)
+      // THEN dan's item carries the missing-region error and no decision
+      const dan = res.body.results[2]
+      assert.equal(dan.correlationId, 'dan')
+      assert.equal(dan.allowed, undefined)
+      assert.match(dan.error, /missing context parameters '\[region\]'/)
+    })
+
+  })
+
+  describe('when items have conditions on the API-provided context', () => {
+    it('should decide each one with current_time and user_ip', async () => {
+      // GIVEN frank's time-limited grant and carol's office-only grant
+      // WHEN checking both in one batch from 127.0.0.1
+      const { status, body } = await batchCheck(api, [
+        { correlationId: 'frank', user: 'user:frank', relation: 'viewer', object: 'folder:launch' },
+        { correlationId: 'carol', user: 'user:carol', relation: 'can_edit', object: 'project:roadmap' },
+      ])
+      // THEN both get a decision: frank is inside his window, carol is outside the office
+      assert.equal(status, 200)
+      assert.deepEqual(body.results, [
+        { correlationId: 'frank', allowed: true },
+        { correlationId: 'carol', allowed: false },
+      ])
     })
   })
 
@@ -324,6 +434,17 @@ describe('GET /list-objects against OpenFGA', () => {
     })
   })
 
+  describe('when grants are time-limited', () => {
+    it('should list only the objects inside their window', async () => {
+      // GIVEN frank's team can view folder:launch now, and could view folder:archive three days ago
+      // WHEN listing the folders he can view, with the API's current_time
+      const { status, body } = await request(api, '/list-objects?user=user:frank&relation=viewer&type=folder')
+      // THEN only launch is listed
+      assert.equal(status, 200)
+      assert.deepEqual(body, { objects: ['folder:launch'] })
+    })
+  })
+
   describe('when the type is unknown', () => {
     it("should answer 400 with OpenFGA's message", async () => {
       // GIVEN a type the model doesn't define
@@ -332,6 +453,72 @@ describe('GET /list-objects against OpenFGA', () => {
       // THEN the API answers 400
       assert.equal(status, 400)
       assert.match(body.message, /^list objects: .*nope/)
+    })
+  })
+})
+
+describe('a pinned model (FGA_MODEL_ID) against OpenFGA', () => {
+  // A newer model in which project has an owner but no can_edit.
+  const OWNER_ONLY = {
+    schema_version: '1.1',
+    type_definitions: [
+      { type: 'user' },
+      {
+        type: 'project',
+        relations: { owner: { this: {} } },
+        metadata: { relations: { owner: { directly_related_user_types: [{ type: 'user' }] } } },
+      },
+    ],
+  }
+  const aliceEdits = { user: 'user:alice', relation: 'can_edit', object: 'project:roadmap' }
+
+  describe('when a newer model is written after the API started', () => {
+    let pinnedStore: Awaited<ReturnType<typeof createStore>>
+    let pinned: Api
+
+    before(async () => {
+      // GIVEN an API pinned to the demo model of a store where alice owns roadmap
+      pinnedStore = await createStore('pinned')
+      await pinnedStore.fga.write({ writes: [{ user: 'user:alice', relation: 'owner', object: 'project:roadmap' }] })
+      pinned = await startApi(pinnedStore.id, { FGA_MODEL_ID: pinnedStore.modelId! })
+      assert.equal((await check(pinned, aliceEdits)).body.allowed, true)
+      // AND a newer model without can_edit becomes the store's latest
+      await pinnedStore.fga.writeAuthorizationModel(OWNER_ONLY as any)
+    })
+
+    after(async () => {
+      await stopApi(pinned)
+    })
+
+    it('should keep answering with the pinned model', async () => {
+      // WHEN checking alice can_edit roadmap again
+      const { status, body } = await check(pinned, aliceEdits)
+      // THEN the pinned model still defines can_edit and allows it
+      assert.equal(status, 200)
+      assert.equal(body.allowed, true)
+    })
+
+    it('should differ from an API that follows the latest model', async () => {
+      await withApi(pinnedStore.id, {}, async (latest) => {
+        // WHEN an unpinned API checks the same tuple
+        const { status, body } = await check(latest, aliceEdits)
+        // THEN the latest model has no can_edit and OpenFGA rejects the check
+        assert.equal(status, 400)
+        assert.match(body.message, /can_edit/)
+      })
+    })
+  })
+
+  describe('when the pinned model does not exist', () => {
+    it('should answer 502 "store or model not found"', async () => {
+      await withApi(store.id, { FGA_MODEL_ID: MISSING_MODEL }, async (fresh) => {
+        // GIVEN an API pinned to a model id the store doesn't have
+        // WHEN checking
+        const { status, body } = await check(fresh, aliceEdits)
+        // THEN the API answers 502 instead of falling back to the latest model
+        assert.equal(status, 502)
+        assert.deepEqual(body, { _tag: 'UpstreamError', message: 'check: store or model not found' })
+      })
     })
   })
 })

@@ -1,10 +1,20 @@
 // The public API, declared once with Effect's HttpApi: request validation,
-// response shapes, errors and the OpenAPI document (/openapi.json) all come
-// from these schemas.
+// response shapes, errors and the OpenAPI document (/openapi.json, rendered at
+// /docs) all come from these schemas.
 
 import { Schema } from 'effect'
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from 'effect/http-api'
-import { BadRequestError, BusyError, UpstreamErrorError } from './errors.ts'
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, OpenApi } from 'effect/http-api'
+import { BadRequest, Busy, UnsupportedMediaType, UpstreamError } from './errors.ts'
+
+/** Answers a request that fails decoding (query, payload) with a JSON 400 saying what was wrong. */
+export class RequestErrors extends HttpApiMiddleware.Service<RequestErrors>()('demo-fga-api/RequestErrors', {
+  error: BadRequest,
+}) {}
+
+/** Answers a body that isn't declared as JSON with a JSON 415 instead of Effect's plain-text one. */
+export class JsonBodyOnly extends HttpApiMiddleware.Service<JsonBodyOnly>()('demo-fga-api/JsonBodyOnly', {
+  error: UnsupportedMediaType,
+}) {}
 
 const TupleFields = {
   user: Schema.NonEmptyString,
@@ -19,6 +29,9 @@ export const HealthView = Schema.Struct({
   resolved: Schema.String,
   openfgaMs: Schema.Number,
   memoryMiB: Schema.Struct({ rss: Schema.Number, heapUsed: Schema.Number }),
+  // The model checks use: the pinned one (FGA_MODEL_ID), or the store's latest
+  // as last looked up (null until a request has looked the store up).
+  model: Schema.Struct({ id: Schema.NullOr(Schema.String), pinned: Schema.Boolean }),
 })
 
 // OpenFGA may answer a Check from its cache (on in the Unikraft deployment),
@@ -75,30 +88,36 @@ export const BenchView = Schema.Struct({
   target: Schema.String,
 })
 
+// RequestErrors is attached per group, after the endpoints (a group's
+// middleware only covers the endpoints added before it). /health takes no
+// input, so it has none and documents no 400.
 export const HealthGroup = HttpApiGroup.make('health').add(HttpApiEndpoint.get('health', '/health', { success: HealthView }))
 
+// Each check carries a condition context the API fills in (current_time,
+// user_ip; see handlers.ts). Callers can't send one.
 export const AuthzGroup = HttpApiGroup.make('authz')
   .add(
     HttpApiEndpoint.get('check', '/check', {
       query: { ...TupleFields, consistency: Schema.optional(Consistency) },
       success: CheckView,
-      error: [BadRequestError, UpstreamErrorError],
+      error: [BadRequest, UpstreamError],
     }),
   )
   .add(
     HttpApiEndpoint.post('batchCheck', '/batch-check', {
       payload: BatchCheckInput,
       success: BatchCheckView,
-      error: [BadRequestError, UpstreamErrorError],
-    }),
+      error: [BadRequest, UpstreamError],
+    }).middleware(JsonBodyOnly),
   )
   .add(
     HttpApiEndpoint.get('listObjects', '/list-objects', {
       query: { user: Schema.NonEmptyString, relation: Schema.NonEmptyString, type: Schema.NonEmptyString },
       success: ListObjectsView,
-      error: [BadRequestError, UpstreamErrorError],
+      error: [BadRequest, UpstreamError],
     }),
   )
+  .middleware(RequestErrors)
 
 // Optional query values stay strings and are parsed leniently in the handler
 // (`n=abc` means the default, `n=1.5` means 1, `n=0` means 1).
@@ -111,9 +130,9 @@ export const BenchGroup = HttpApiGroup.make('bench').add(
       object: Schema.optional(Schema.NonEmptyString),
     },
     success: BenchView,
-    error: [BadRequestError, UpstreamErrorError, BusyError],
+    error: [BadRequest, UpstreamError, Busy],
   }),
-)
+).middleware(RequestErrors)
 
 export const Api = HttpApi.make('demo-fga-api')
   .annotateMerge(

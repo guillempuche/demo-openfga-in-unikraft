@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createServer, type Server } from 'node:http'
+import { createServer, get as httpGet, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { after, before, beforeEach, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -779,6 +779,46 @@ describe('GET /check', () => {
     })
   })
 
+  describe('when the only request waiting for a store lookup goes away', () => {
+    let aborted: Route[] = []
+    let next: Res
+    let lookups = 0
+
+    before(async () => {
+      resetStub()
+      await withFreshApi({}, async (fresh) => {
+        // GIVEN a slow store listing, awaited by a single check
+        stub.hooks.stores = async () => {
+          await sleep(500)
+          return undefined
+        }
+        // (A raw request whose socket is destroyed: an aborted fetch leaves its
+        // connection open for a few seconds, which delays stopping the API.)
+        const first = httpGet(fresh.base + CHECK, { agent: false }).on('error', () => undefined)
+        await until(() => calls('stores').length === 1)
+        // WHEN its client disconnects
+        first.destroy()
+        await until(() => stub.aborted.length > 0, 1000).catch(() => undefined)
+        aborted = [...stub.aborted]
+        // AND a new check arrives once OpenFGA is fast again
+        stub.hooks.stores = undefined
+        next = await get(CHECK, fresh)
+        lookups = calls('stores').length
+      })
+    })
+
+    it('should cancel the lookup', () => {
+      // THEN the stub saw the API close the pending GET /stores
+      assert.deepEqual(aborted, ['stores'])
+    })
+
+    it('should look the store up again for the next request', () => {
+      // THEN the next check ran its own lookup and succeeded
+      assert.equal(next.status, 200)
+      assert.equal(lookups, 2)
+    })
+  })
+
   // With scale-to-zero policy `on`, an open connection keeps the instance up.
   describe('when the connection to OpenFGA is idle [slow]', () => {
     it('should close it within 5 seconds', async () => {
@@ -895,7 +935,9 @@ describe('POST /batch-check', () => {
       // THEN the API answers 415 in the error shape
       assert.equal(res.status, 415)
       assert.match(res.contentType ?? '', /application\/json/)
-      assert.deepEqual(res.body, { _tag: 'BadRequest', message: 'unsupported content-type: send application/json' })
+      assert.deepEqual(res.body, { _tag: 'UnsupportedMediaType', message: 'unsupported content-type: send application/json' })
+      // AND OpenFGA is never called
+      assert.equal(calls('batchCheck').length, 0)
     })
   })
 
@@ -1072,6 +1114,44 @@ describe('GET /list-objects', () => {
       assert.deepEqual(body, { _tag: 'UpstreamError', message: 'list objects: HTTP 503' })
     })
   })
+
+  // The SDK doesn't validate OpenFGA's replies, so a malformed one reaches the
+  // response schema: the API's own fault, not the client's.
+  describe("when the answer doesn't match the response schema", () => {
+    let res: Res
+    let errorLines: any[] = []
+
+    before(async () => {
+      resetStub()
+      await withFreshApi({}, async (fresh) => {
+        // GIVEN OpenFGA lists objects that aren't strings
+        stub.hooks.listObjects = () => json(200, { objects: [1, 2] })
+        // WHEN listing
+        res = await get('/list-objects?user=user:alice&relation=can_view&type=project', fresh)
+        await until(() => fresh.output().includes('"level":"ERROR"'), 1000).catch(() => undefined)
+        await sleep(100) // a duplicate line would show up by now
+        errorLines = fresh
+          .output()
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+          .filter((line) => line.level === 'ERROR')
+      })
+    })
+
+    it('should answer 500', () => {
+      // THEN the API reports its own failure, not a bad request
+      assert.equal(res.status, 500)
+    })
+
+    it('should log the defect once, as JSON naming the request', () => {
+      // THEN one ERROR line carries the schema failure and the request, without its query
+      assert.equal(errorLines.length, 1, JSON.stringify(errorLines))
+      const [line] = errorLines
+      assert.deepEqual(line.annotations, { 'http.method': 'GET', 'http.url': '/list-objects' })
+      assert.match(line.cause, /Expected string/)
+    })
+  })
 })
 
 // --- GET /bench ------------------------------------------------------------
@@ -1236,6 +1316,159 @@ describe('GET /bench', () => {
   })
 })
 
+// --- condition context ------------------------------------------------------
+
+/** The context OpenFGA received with the last call on `route` (a /batch-check item's, for batchCheck). */
+const sentContext = (route: 'check' | 'batchCheck' | 'listObjects') => {
+  const body = calls(route).at(-1)!.body
+  return route === 'batchCheck' ? body.checks[0].context : body.context
+}
+
+describe('condition context', () => {
+  describe('when checking a tuple', () => {
+    it('should send current_time and user_ip with /check', async () => {
+      // GIVEN the shared API (default CLIENT_IP_FROM=socket)
+      // WHEN checking
+      await get(CHECK)
+      // THEN OpenFGA receives exactly those two parameters
+      assert.deepEqual(Object.keys(sentContext('check')).sort(), ['current_time', 'user_ip'])
+    })
+  })
+
+  describe('when checking a batch', () => {
+    it('should send the same context with every item', async () => {
+      // GIVEN three items
+      // WHEN checking them in one batch
+      await postBatch({ checks: [item('a'), item('b'), item('c')] })
+      // THEN each item carries the same current_time and user_ip
+      const contexts = calls('batchCheck')[0].body.checks.map((c: any) => c.context)
+      assert.equal(contexts.length, 3)
+      assert.deepEqual(Object.keys(contexts[0]).sort(), ['current_time', 'user_ip'])
+      for (const context of contexts) assert.deepEqual(context, contexts[0])
+    })
+  })
+
+  describe('when listing objects', () => {
+    it('should send current_time and user_ip with /list-objects', async () => {
+      // GIVEN a list-objects query
+      // WHEN listing
+      await get('/list-objects?user=user:alice&relation=can_view&type=project')
+      // THEN OpenFGA receives the context
+      assert.deepEqual(Object.keys(sentContext('listObjects')).sort(), ['current_time', 'user_ip'])
+    })
+  })
+
+  describe('when benchmarking', () => {
+    it('should send no context', async () => {
+      // GIVEN a bench run
+      // WHEN it checks
+      await get('/bench?n=2')
+      // THEN no check carried a context
+      assert.ok(calls('check').every((c) => c.body.context === undefined))
+    })
+  })
+
+  describe('when CURRENT_TIME_STEP is not set', () => {
+    it('should send the server time rounded down to 10 seconds', async () => {
+      // GIVEN the shared API (default step)
+      // WHEN checking
+      const before = Date.now()
+      await get(CHECK)
+      // THEN current_time is on a 10 s boundary, at most 10 s before the request
+      const sent = Date.parse(sentContext('check').current_time)
+      assert.equal(sent % 10_000, 0)
+      assert.ok(sent <= Date.now() && sent > before - 10_000, sentContext('check').current_time)
+    })
+  })
+
+  describe('when CURRENT_TIME_STEP is set', () => {
+    it('should send the server time rounded down to that step', async () => {
+      await withFreshApi({ CURRENT_TIME_STEP: '1 hour' }, async (fresh) => {
+        // GIVEN a one-hour step
+        // WHEN checking
+        const before = Date.now()
+        await get(CHECK, fresh)
+        // THEN current_time is the start of the current UTC hour
+        const sent = Date.parse(sentContext('check').current_time)
+        assert.equal(sent % 3_600_000, 0)
+        assert.ok(sent <= Date.now() && sent > before - 3_600_000, sentContext('check').current_time)
+      })
+    })
+  })
+
+  describe('when CLIENT_IP_FROM is not set (socket)', () => {
+    it('should send the TCP peer as user_ip', async () => {
+      // GIVEN a client connecting from 127.0.0.1
+      // WHEN checking
+      await get(CHECK)
+      // THEN user_ip is the socket's address
+      assert.equal(sentContext('check').user_ip, '127.0.0.1')
+    })
+
+    it('should ignore X-Forwarded-For', async () => {
+      // GIVEN a client that claims another address
+      // WHEN checking
+      await request(api, CHECK, { headers: { 'x-forwarded-for': '10.20.1.2' } })
+      // THEN user_ip is still the socket's address
+      assert.equal(sentContext('check').user_ip, '127.0.0.1')
+    })
+  })
+
+  describe('when CLIENT_IP_FROM is x-forwarded-for', () => {
+    let proxied: Api
+
+    before(async () => {
+      proxied = await startApi({ ...defaultEnv(), CLIENT_IP_FROM: 'x-forwarded-for' })
+    })
+
+    after(async () => {
+      await stopApi(proxied)
+    })
+
+    const checkWith = (headers: Record<string, string>) => request(proxied, CHECK, { headers })
+
+    it('should send the last entry as user_ip', async () => {
+      // GIVEN a header whose first entry the client forged and whose last the proxy added
+      // WHEN checking
+      await checkWith({ 'x-forwarded-for': '10.20.1.2, 203.0.113.7' })
+      // THEN user_ip is the proxy's entry
+      assert.equal(sentContext('check').user_ip, '203.0.113.7')
+    })
+
+    it('should send an IPv6 address as is', async () => {
+      // GIVEN an IPv6 client
+      // WHEN checking
+      await checkWith({ 'x-forwarded-for': '2001:db8::1' })
+      // THEN user_ip is that address
+      assert.equal(sentContext('check').user_ip, '2001:db8::1')
+    })
+
+    it('should leave user_ip out when the header is missing', async () => {
+      // GIVEN no X-Forwarded-For (the TCP peer would be the proxy)
+      // WHEN checking
+      await checkWith({})
+      // THEN only current_time is sent
+      assert.deepEqual(Object.keys(sentContext('check')), ['current_time'])
+    })
+
+    it('should leave user_ip out when the last entry is not an IP address', async () => {
+      // GIVEN a last entry that isn't an address
+      // WHEN checking
+      await checkWith({ 'x-forwarded-for': '203.0.113.7, unknown' })
+      // THEN only current_time is sent
+      assert.deepEqual(Object.keys(sentContext('check')), ['current_time'])
+    })
+
+    it('should ignore X-Real-IP', async () => {
+      // GIVEN only X-Real-IP, which Unikraft's proxy passes through from the client
+      // WHEN checking
+      await checkWith({ 'x-real-ip': '10.20.1.2' })
+      // THEN user_ip is left out
+      assert.equal(sentContext('check').user_ip, undefined)
+    })
+  })
+})
+
 // --- GET /health -----------------------------------------------------------
 
 describe('GET /health', () => {
@@ -1267,6 +1500,30 @@ describe('GET /health', () => {
       assert.equal(typeof body.openfgaMs, 'number')
       assert.ok(body.memoryMiB.rss > 0)
       assert.ok(body.memoryMiB.heapUsed > 0)
+    })
+  })
+
+  describe('when no model is pinned', () => {
+    it('should report no model before the first lookup', async () => {
+      await withFreshApi({}, async (fresh) => {
+        // GIVEN a fresh API that hasn't looked the store up
+        // WHEN asking for health
+        const { body } = await get('/health', fresh)
+        // THEN the model is unknown, and asking didn't trigger a lookup
+        assert.deepEqual(body.model, { id: null, pinned: false })
+        assert.equal(calls('stores').length, 0)
+      })
+    })
+
+    it('should report the latest model once looked up', async () => {
+      await withFreshApi({}, async (fresh) => {
+        // GIVEN a fresh API that has checked a tuple
+        await get(CHECK, fresh)
+        // WHEN asking for health
+        const { body } = await get('/health', fresh)
+        // THEN the store's latest model is reported, not pinned
+        assert.deepEqual(body.model, { id: MODEL, pinned: false })
+      })
     })
   })
 
@@ -1360,6 +1617,21 @@ describe('GET /openapi.json', () => {
       assert.ok(doc.paths['/bench'].get.responses['429'])
     })
 
+    it('should document 415 for /batch-check only', () => {
+      // THEN the only endpoint with a body is the only one listing UnsupportedMediaType
+      const with415 = Object.entries<any>(doc.paths).flatMap(([path, ops]) =>
+        Object.entries<any>(ops)
+          .filter(([, op]) => op.responses['415'])
+          .map(([method]) => `${method} ${path}`),
+      )
+      assert.deepEqual(with415, ['post /batch-check'])
+    })
+
+    it('should document no 400 for /health', () => {
+      // THEN /health, which takes no input, lists no BadRequest
+      assert.equal(doc.paths['/health'].get.responses['400'], undefined)
+    })
+
     it('should document the per-item error of /batch-check', () => {
       // THEN a result item is either a decision or an error
       const items = doc.paths['/batch-check'].post.responses['200'].content['application/json'].schema.properties.results.items
@@ -1370,6 +1642,20 @@ describe('GET /openapi.json', () => {
           ['correlationId', 'error'],
         ],
       )
+    })
+  })
+})
+
+describe('GET /docs', () => {
+  describe('when requested', () => {
+    it('should answer 200 with an HTML page for the API', async () => {
+      // GIVEN the running API
+      // WHEN fetching the docs page
+      const { status, body, contentType } = await get('/docs')
+      // THEN it is the rendered reference for this API
+      assert.equal(status, 200)
+      assert.match(contentType ?? '', /^text\/html/)
+      assert.match(body, /<title>demo-fga-api<\/title>/)
     })
   })
 })
@@ -1410,6 +1696,10 @@ describe('startup', () => {
       ['FGA_STORE_ID is not a ULID', { FGA_STORE_ID: 'demo-fga' }, 'FGA_STORE_ID'],
       ['FGA_STORE_ID is a lowercase ULID', { FGA_STORE_ID: STORE_1.toLowerCase() }, 'FGA_STORE_ID'],
       ['FGA_STORE_CACHE_TTL is not a duration', { FGA_STORE_CACHE_TTL: 'soon' }, 'FGA_STORE_CACHE_TTL'],
+      ['FGA_MODEL_ID is not a ULID', { FGA_MODEL_ID: 'latest' }, 'FGA_MODEL_ID'],
+      ['CLIENT_IP_FROM is not a known source', { CLIENT_IP_FROM: 'x-real-ip' }, 'CLIENT_IP_FROM'],
+      ['CURRENT_TIME_STEP is not a duration', { CURRENT_TIME_STEP: 'soon' }, 'CURRENT_TIME_STEP'],
+      ['CURRENT_TIME_STEP is zero', { CURRENT_TIME_STEP: '0 millis' }, 'CURRENT_TIME_STEP'],
     ]
     for (const [label, env, name] of cases) {
       it(`should exit non-zero naming ${name} when ${label}`, async () => {
@@ -1422,6 +1712,42 @@ describe('startup', () => {
         assert.match(output, new RegExp(name))
       })
     }
+  })
+
+  describe('when the API stops at startup', () => {
+    it('should log one JSON FATAL line and exit 1 for invalid config', async () => {
+      // GIVEN a config the API refuses
+      // WHEN starting the API
+      const { code, output } = await runUntilExit({ ...defaultEnv(), PORT: 'abc' })
+      // THEN it prints a single JSON line naming the cause, and exits 1
+      assert.equal(code, 1)
+      const lines = output.trim().split('\n')
+      assert.equal(lines.length, 1, output)
+      const line = JSON.parse(lines[0])
+      assert.equal(line.level, 'FATAL')
+      assert.match(line.cause, /PORT/)
+    })
+
+    it('should log one JSON FATAL line and exit 1 when the port is taken', async () => {
+      // GIVEN a port another server listens on
+      const taken = createServer()
+      await new Promise<void>((r) => taken.listen(0, '0.0.0.0', r))
+      try {
+        // WHEN starting the API on it
+        const { code, output } = await runUntilExit({ ...defaultEnv(), PORT: String((taken.address() as AddressInfo).port) })
+        // THEN the listen failure is logged as one JSON FATAL line, and the exit code is 1
+        assert.equal(code, 1)
+        const fatal = output
+          .trim()
+          .split('\n')
+          .map((l) => JSON.parse(l))
+          .filter((l) => l.level === 'FATAL')
+        assert.equal(fatal.length, 1, output)
+        assert.match(fatal[0].cause, /EADDRINUSE/)
+      } finally {
+        taken.close()
+      }
+    })
   })
 
   describe('when FGA_API_URL has a path', () => {
@@ -1473,6 +1799,71 @@ describe('startup', () => {
         assert.equal(status, 502)
         assert.deepEqual(body, { _tag: 'UpstreamError', message: 'check: store or model not found' })
         assert.equal(calls('stores').length, 0)
+      })
+    })
+  })
+
+  describe('when FGA_MODEL_ID is set', () => {
+    const MODEL_2 = '01HX00000000000000000000M2'
+
+    it('should never read the models', async () => {
+      await withFreshApi({ FGA_MODEL_ID: MODEL_2 }, async (fresh) => {
+        // GIVEN a pinned model
+        // WHEN checking, batch-checking and listing
+        await get(CHECK, fresh)
+        await postBatch({ checks: [item('a')] }, fresh)
+        await get('/list-objects?user=user:alice&relation=can_view&type=project', fresh)
+        // THEN the store's models were never listed
+        assert.equal(calls('models').length, 0)
+        assert.equal(calls('stores').length, 1)
+      })
+    })
+
+    it('should send that model id with every call', async () => {
+      await withFreshApi({ FGA_MODEL_ID: MODEL_2 }, async (fresh) => {
+        // GIVEN a pinned model (the store's latest is MODEL)
+        // WHEN checking, batch-checking and listing
+        await get(CHECK, fresh)
+        await postBatch({ checks: [item('a')] }, fresh)
+        await get('/list-objects?user=user:alice&relation=can_view&type=project', fresh)
+        // THEN each call names the pinned model
+        assert.deepEqual(
+          stub.received.filter((r) => r.method === 'POST').map((r) => [r.route, r.body.authorization_model_id]),
+          [
+            ['check', MODEL_2],
+            ['batchCheck', MODEL_2],
+            ['listObjects', MODEL_2],
+          ],
+        )
+      })
+    })
+
+    it('should answer 502 without falling back to the latest model when OpenFGA lacks it', async () => {
+      await withFreshApi({ FGA_MODEL_ID: MODEL_2 }, async (fresh) => {
+        // GIVEN OpenFGA doesn't know the pinned model
+        stub.hooks.check = (req) =>
+          req.body.authorization_model_id === MODEL_2
+            ? json(400, { code: 'authorization_model_not_found', message: `Authorization Model '${MODEL_2}' not found` })
+            : undefined
+        // WHEN checking
+        const { status, body } = await get(CHECK, fresh)
+        // THEN the API answers 502 after one fresh lookup, and never used another model
+        assert.equal(status, 502)
+        assert.deepEqual(body, { _tag: 'UpstreamError', message: 'check: store or model not found' })
+        assert.deepEqual(
+          calls('check').map((c) => c.body.authorization_model_id),
+          [MODEL_2, MODEL_2],
+        )
+      })
+    })
+
+    it('should report the pinned model in /health', async () => {
+      await withFreshApi({ FGA_MODEL_ID: MODEL_2 }, async (fresh) => {
+        // GIVEN a pinned model
+        // WHEN asking for health
+        const { body } = await get('/health', fresh)
+        // THEN it is reported as pinned, without any lookup
+        assert.deepEqual(body.model, { id: MODEL_2, pinned: true })
       })
     })
   })
