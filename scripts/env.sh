@@ -92,9 +92,11 @@ instance_exists() {
 # line per image.
 DIGESTS_FILE="$ROOT/.cache/image-digests"
 
-# The registry's current digest of <org>/<name>:latest.
+# The registry's current digest of <org>/<name>:latest. `images get` reads the
+# registry itself; `images list` can lag a push by minutes. -f digest keeps the
+# image's config (its env) out of the output.
 registry_digest() {
-  unikraft images list -o json | jq -r --arg r "${1%:latest}" '.[] | select(.ref == $r) | .digest' | head -n1
+  unikraft images get "unikraft.io/$1" -f digest -o json 2>/dev/null | jq -r '.[0].digest // empty'
 }
 
 # Record <digest> as the one to deploy for <org>/<name>:latest.

@@ -21,8 +21,14 @@ build_push() {
   digest="$(tar -xOf "$outdir/$name.oci.tar" index.json | jq -r '.manifests[0].digest')"
   echo "==> pushing unikraft.io/$image ($digest)"
   unikraft images copy "$outdir/$name.oci.tar" "unikraft.io/$image"
-  if [[ "$(registry_digest "$image")" != "$digest" ]]; then
-    echo "error: the registry doesn't list $image at $digest after the push" >&2
+  local got=""
+  for _ in 1 2 3 4 5 6; do
+    got="$(registry_digest "$image")"
+    [[ "$got" == "$digest" ]] && break
+    sleep 5
+  done
+  if [[ "$got" != "$digest" ]]; then
+    echo "error: unikraft.io/$image resolves to ${got:-nothing}, but $digest was pushed" >&2
     exit 1
   fi
   # deploy.sh runs this digest from now on (see DIGESTS_FILE in env.sh).
