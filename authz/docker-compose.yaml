@@ -49,6 +49,15 @@ services:
       - OPENFGA_LOG_FORMAT=json
       - OPENFGA_LOG_LEVEL=debug
     command: run
+    healthcheck:
+      # grpc_health_probe ships in the official image. The gRPC health service
+      # needs no preshared key and reports SERVING once the datastore is ready.
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
     networks:
       - demo_authz_network
 
@@ -72,6 +81,15 @@ services:
       - OPENFGA_PLAYGROUND_ADDR=0.0.0.0:3000
       - OPENFGA_LOG_FORMAT=json
     command: run
+    healthcheck:
+      # grpc_health_probe ships in the official image. The gRPC health service
+      # needs no preshared key and reports SERVING once the datastore is ready.
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
     ports:
       - "127.0.0.1:8090:8090"  # unauthenticated API used by the Playground page
       - "127.0.0.1:8082:3000"  # Playground: http://localhost:8082/playground
@@ -82,7 +100,7 @@ services:
     image: caddy:2.8-alpine
     depends_on:
       openfga:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "8080:8080"  # OpenFGA API (preshared key)
     volumes:

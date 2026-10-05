@@ -51,6 +51,15 @@ services:
       - OPENFGA_EXPERIMENTALS=authzen,inline_expressions
       - OPENFGA_AUTHZEN_BASE_URL=http://127.0.0.1:28080
       - OPENFGA_LOG_FORMAT=json
+    healthcheck:
+      # grpc_health_probe ships in the official image. The gRPC health service
+      # needs no preshared key and reports SERVING once the datastore is ready.
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
     ports:
       - "127.0.0.1:28080:8080" # HTTP
       - "127.0.0.1:28081:8081" # gRPC
