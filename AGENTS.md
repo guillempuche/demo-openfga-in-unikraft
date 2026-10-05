@@ -40,7 +40,8 @@ infrastructure/unikraft/    openfga/ and postgres/ Kraftfiles and Dockerfiles
 scripts/                    env.sh (shared), build, deploy, tunnel, seed, test-remote, test-integration-remote, check-e2e, verify, measure-wake, cleanup, sync-agent-skills, check-* gates
 tests/integration/          OpenFGA integration suite (@openfga/sdk + node:test), its compose stack (ports 28080/28081/22112)
 .agents/skills/             agent skills (unikraft, git-commit-messages, write-comments); .claude/skills/ symlinks the repo ones
-docs/RESULTS.md             measured results; docs/1-*, docs/2-* are historical (legacy CLI)
+docs/openfga-features.md    feature guide: model excerpt, SDK call and test names per OpenFGA feature
+docs/RESULTS.md             measured results; docs/archive/ is historical (legacy CLI)
 docs/repos/                 read-only git subtree copies of OpenFGA repos (server, api, js-sdk, cli, language, sample-stores); see docs/repos/README.md
 .github/workflows/ci.yml    CI: model tests, API typecheck + tests, shellcheck, API rootfs build
 ```

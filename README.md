@@ -3,19 +3,21 @@
 [![CI](https://github.com/guillempuche/demo-openfga-in-unikraft/actions/workflows/ci.yml/badge.svg)](https://github.com/guillempuche/demo-openfga-in-unikraft/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grained, relationship-based authorization) on [Unikraft Cloud](https://unikraft.com) unikernels. OpenFGA and PostgreSQL run as **private** instances with no public service, reached over Unikraft's internal network (`<name>.internal`); a small **public** Node.js/TypeScript API sits in front. Measured on Unikraft Cloud: **~1 ms p50** authorization checks from the API to OpenFGA, under 30 MiB of memory each for OpenFGA and the API, and the model tests passing against the deployed store. The same models run locally with Docker Compose.
+Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grained, relationship-based authorization) on [Unikraft Cloud](https://unikraft.com) unikernels. OpenFGA and PostgreSQL run as **private** instances with no public service, reached over Unikraft's internal network (`<name>.internal`); a small **public** TypeScript API ([Effect](https://effect.website) 4 and the official OpenFGA SDK, on Node.js) sits in front. Measured on Unikraft Cloud: **~1 ms p50** authorization checks from the API to OpenFGA, under 30 MiB of memory each for OpenFGA and the API, and the model tests passing against the deployed store. The same models run locally with Docker Compose.
 
 ## At a glance
 
 | What | Result ([details](docs/RESULTS.md)) |
 | --- | --- |
-| API → OpenFGA over `.internal`, warm check | p50 1.0–1.3 ms, p95 ≤ 2.4 ms (100 sequential checks) |
+| API → OpenFGA over `.internal`, warm check | p50 0.74–0.87 ms (Effect API; 1.0–1.3 ms before), 100 sequential checks |
+| Write through the tunnel → public API sees it → delete → API sees that | ✅ before and after a full redeploy; store, model and tuples unchanged |
+| API woken from scale-to-zero standby | p50 +0.21 s over a running instance (10 runs) |
 | Same, OpenFGA check cache off (1 Postgres round trip) | p50 1.5–1.8 ms |
 | Exposure | No service on OpenFGA or Postgres; ports 8080/8081/3000/2112/5432 don't answer; no key → `401` |
 | Redeploy (delete + run, 32 s) | Every private IP changed and was reused by another instance; `.internal` names kept working with no config change |
 | `fga model test` against the deployed server (v1.21.0, fresh store) | 28/28 tests: 190 checks, 11 ListObjects, 16 ListUsers |
 | OpenFGA API | All 19 core RPCs called and asserted on Unikraft (server metrics as proof); +6 AuthZEN RPCs on the experimental local/CI stack |
-| Memory | OpenFGA 17.6 MiB RSS, API 26 MiB RSS (512 MiB allocated each) |
+| Memory | OpenFGA 17.6 MiB RSS, API 25 MiB RSS idle (512 MiB allocated each) |
 
 ## Contents
 
@@ -24,7 +26,7 @@ Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grain
 - [Deploy to Unikraft Cloud](#deploy-to-unikraft-cloud)
 - [Patterns to copy](#patterns-to-copy)
 - [Gotchas](#gotchas)
-- [Authorization models](#authorization-models)
+- [Authorization models](#authorization-models), and the [OpenFGA features guide](docs/openfga-features.md): every feature with its model excerpt, SDK call and tests
 - [Integration tests: every OpenFGA RPC](#integration-tests-every-openfga-rpc)
 - [Repository layout](#repository-layout)
 - [Development](#development)
@@ -320,6 +322,14 @@ With CLI 0.5.2 the third target answers "internal tunnel error"; `scripts/tunnel
 
 `unikraft instances tunnel` starts a `utils/tunnel` instance (128 MiB, random `inst-*` name) that counts against your quota and has its own public FQDN while the tunnel is open. Plain HTTPS to that FQDN returns "Service not found", not your service; the tunnel traffic itself uses the CLI's relay protocol, whose authentication this demo didn't examine. The relay is removed when the tunnel process gets one SIGTERM or Ctrl-C; a second signal during that cleanup leaves the relay running (it happened here: delete leftovers by name, image `utils/tunnel`). Close tunnels when you're done; `scripts/verify.sh` fails while a relay is public.
 
+### A Check right after a write can return the old answer
+
+The deployment enables OpenFGA's check cache (`OPENFGA_CHECK_QUERY_CACHE_ENABLED=true`, 10 s TTL). A Check cached before a write keeps its answer until the TTL expires: on Unikraft, `check-e2e.sh` saw `false` right after writing the tuple. Ask with `consistency: HIGHER_CONSISTENCY` (`/check?...&consistency=HIGHER_CONSISTENCY`) when a read must see a write.
+
+### The OpenFGA SDK keeps idle connections open, so the API never scales to zero
+
+With scale-to-zero policy `on`, an instance stays up while any TCP connection is open, including its own outgoing ones. `@openfga/sdk` (0.9.7) creates `http.Agent({ keepAlive: true })` with no idle timeout, so the first Effect API stayed `running` for minutes. [`api/src/openfga.ts`](api/src/openfga.ts) passes agents that close idle sockets after 4 s, and a test checks it; the API now goes to standby about 14 s after its last request.
+
 ## Authorization models
 
 The modules live in `authz/models/` and run unchanged locally and on Unikraft:
@@ -332,7 +342,7 @@ A project-management domain, org → team → folder → project → list → ta
 - `projects.fga`: nested folders, projects (roles, public access, blocking, sharing) and lists.
 - `tasks.fga`: tasks, plus project permissions added with `extend type`.
 
-Each feature has its own test file next to the manifest, all testing the same model:
+Each feature has its own test file next to the manifest, all testing the same model. [docs/openfga-features.md](docs/openfga-features.md) walks through each one with the SDK calls that use it:
 
 | Feature | Where in the model | Tests |
 | --- | --- | --- |
@@ -364,13 +374,14 @@ To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<n
 - `authz/` – local Docker Compose stack (PostgreSQL, OpenFGA, Caddy; optional Playground profile).
 - `authz/models/` – FGA modules and their tests.
 - `authz/seed/tuples.yaml` – synthetic tuples for the demo store.
-- `api/` – public demo API (Node.js 24, TypeScript run natively), its tests, Kraftfile and Dockerfile.
+- `api/` – public demo API (Effect 4, `@openfga/sdk`, Node.js 24; bundled into one file for the unikernel), its tests, Kraftfile and Dockerfile.
 - `infrastructure/unikraft/openfga/` – OpenFGA Kraftfile and Dockerfile (static Go build).
 - `infrastructure/unikraft/postgres/` – PostgreSQL Kraftfile and rootfs, from the [Unikraft examples](https://github.com/unikraft-cloud/examples/tree/main/postgres) (see [NOTICE](NOTICE)).
 - `scripts/` – `unikraft` CLI wrappers (build, deploy, tunnel, seed, test-remote, test-integration-remote, verify, cleanup) and the coverage gates.
 - `tests/integration/` – OpenFGA integration suite (`@openfga/sdk`, `node:test`) and its throwaway compose stack.
 - `versions.env` – pinned OpenFGA and fga CLI versions; `scripts/check-versions.sh` (in CI) checks every other pin against it.
-- `docs/RESULTS.md` – measured results on Unikraft Cloud. `docs/1-*.md` and `docs/2-*.md` are historical notes from the legacy `kraft cloud` setup.
+- `docs/openfga-features.md` – every OpenFGA feature used here, with model excerpts, SDK calls (plain and Effect) and the tests that cover it.
+- `docs/RESULTS.md` – measured results on Unikraft Cloud. `docs/archive/` holds historical notes from the legacy `kraft cloud` setup.
 - `AGENTS.md` – context for AI coding agents.
 
 ## Integration tests: every OpenFGA RPC
