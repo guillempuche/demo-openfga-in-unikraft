@@ -18,11 +18,10 @@
   "semanticCommitScope": "",
   "customManagers": [
     {
-      "description": "OpenFGA server: versions.env and the unikernel Dockerfile (compose files use the docker-compose manager)",
+      "description": "OpenFGA server: versions.env (the unikernel Dockerfile and the compose files use the dockerfile and docker-compose managers)",
       "customType": "regex",
       "managerFilePatterns": [
-        "/^versions\\.env$/",
-        "/^infrastructure/unikraft/openfga/Dockerfile$/"
+        "/^versions\\.env$/"
       ],
       "matchStrings": [
         "OPENFGA_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)"

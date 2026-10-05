@@ -21,8 +21,10 @@ expect() { # <description> <actual> <expected>
   fi
 }
 
-expect "unikernel Dockerfile OPENFGA_VERSION" \
-  "$(sed -n 's/^ARG OPENFGA_VERSION=//p' "$root/infrastructure/unikraft/openfga/Dockerfile")" "$OPENFGA_VERSION"
+# The unikernel copies the binary out of the official image, pinned by digest:
+# an unpinned tag doesn't match and fails the check.
+expect "unikernel Dockerfile openfga/openfga tag (pinned by digest)" \
+  "$(sed -n 's#^FROM .*openfga/openfga:\(v[0-9][^@ ]*\)@sha256:[0-9a-f]\{64\}\( .*\)\{0,1\}$#\1#p' "$root/infrastructure/unikraft/openfga/Dockerfile")" "$OPENFGA_VERSION"
 
 for compose in authz/docker-compose.yaml tests/integration/docker-compose.yaml; do
   while read -r tag; do

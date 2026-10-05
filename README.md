@@ -254,6 +254,7 @@ unikraft images delete <org>/demo-fga-api:latest
 | Secrets through `unikraft run --load` | [`scripts/deploy.sh`](scripts/deploy.sh) | `-e KEY=VALUE` puts secrets in the process list; a 0600 YAML spec doesn't. |
 | Pin the CLI profile in scripts | [`scripts/env.sh`](scripts/env.sh) | Scripts can't act on another account just because a different profile is active. |
 | Resource-name prefix guard | [`scripts/cleanup.sh`](scripts/cleanup.sh) | Cleanup refuses to touch anything outside `demo-fga-*` on a shared account. |
+| Ship the official OpenFGA binary in a scratch rootfs | [`infrastructure/unikraft/openfga/Dockerfile`](infrastructure/unikraft/openfga/Dockerfile) | Production runs the signed artifact CI tests; no compiler in the build. |
 | Deploy images by digest, recorded at build time | [`scripts/build.sh`](scripts/build.sh), [`scripts/env.sh`](scripts/env.sh) | A redeploy runs what was verified, not whatever `:latest` points at now. |
 | Two-step build: local OCI archive, then push | [`scripts/build.sh`](scripts/build.sh) | Avoids `failed to package kernel … connection reset by peer`. |
 | One-off migration instance on the private network | [`scripts/deploy.sh`](scripts/deploy.sh) | No database port exposed for migrations; the deploy stops unless it exits 0. |
@@ -382,7 +383,7 @@ To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<n
 - `authz/models/` – FGA modules and their tests.
 - `authz/seed/tuples.yaml` – synthetic tuples for the demo store.
 - `api/` – public demo API (Effect 4, `@openfga/sdk`, Node.js 24; bundled into one file for the unikernel), its tests, Kraftfile and Dockerfile.
-- `infrastructure/unikraft/openfga/` – OpenFGA Kraftfile and Dockerfile (static Go build).
+- `infrastructure/unikraft/openfga/` – OpenFGA Kraftfile and Dockerfile (copies the static binary out of the official `openfga/openfga` image, pinned by its signed digest).
 - `infrastructure/unikraft/postgres/` – PostgreSQL Kraftfile and rootfs, from the [Unikraft examples](https://github.com/unikraft-cloud/examples/tree/main/postgres) (see [NOTICE](NOTICE)).
 - `scripts/` – `unikraft` CLI wrappers (build, deploy, tunnel, seed, test-remote, test-integration-remote, verify, cleanup) and the coverage gates.
 - `tests/integration/` – OpenFGA integration suite (`@openfga/sdk`, `node:test`) and its throwaway compose stack.

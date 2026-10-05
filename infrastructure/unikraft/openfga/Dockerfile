@@ -1,43 +1,16 @@
-# Go toolchain required by OpenFGA v1.21.0 (go.mod: go 1.25.7, toolchain go1.26.8).
-ARG GO_VERSION=1.26.8
-# Compile on the build host's native platform and cross-compile to the target
-# architecture; much faster than building under amd64 emulation.
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS build
-
-# Keep in sync with versions.env (checked by scripts/check-versions.sh).
-ARG OPENFGA_VERSION=v1.21.0
-ARG TARGETARCH=amd64
-
-# Simple static build for Unikraft base-compat runtime
-# See: https://unikraft.org/docs/concepts/compatibility
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-RUN git clone --depth=1 --branch ${OPENFGA_VERSION} https://github.com/openfga/openfga.git
-WORKDIR /src/openfga
-
-# Build static binary using pure Go (no CGO)
-# - CGO_ENABLED=0: Pure Go, no C dependencies
-# - netgo: Use Go's net package instead of system resolver
-# - -s -w: Strip debug info for smaller binary
-# This matches OpenFGA's official build configuration
-RUN --mount=type=cache,target=/root/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    set -xe; \
-    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
-    go build \
-      -ldflags="-s -w -X github.com/openfga/openfga/internal/build.Version=${OPENFGA_VERSION} -X github.com/openfga/openfga/internal/build.Commit=$(git rev-parse --short HEAD)" \
-      -tags netgo \
-      -o /usr/bin/openfga ./cmd/openfga
-
-# OpenFGA serves HTTP-to-gRPC traffic over a unix socket in /tmp when it can
-# (falling back to TCP with a warning); scratch has no /tmp, so create one.
-RUN mkdir -p /rootfs/tmp && chmod 1777 /rootfs/tmp
+# The official OpenFGA release image: a static, CGO-free binary built and
+# signed (cosign, SLSA provenance) by OpenFGA's release workflow. Production
+# runs the same artifact the local and CI stacks test. Pinned by the
+# multi-arch index digest, the one OpenFGA signs; --platform picks the amd64
+# binary for kraftcloud/x86_64. Keep the tag in sync with versions.env
+# (checked by scripts/check-versions.sh).
+FROM --platform=linux/amd64 openfga/openfga:v1.21.0@sha256:2113c664a486b5da8d7a2cdab479e0d4e30639c80fd2c000540f645c1dbc1e55 AS openfga
 
 FROM scratch
 
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=build /usr/bin/openfga /usr/bin/openfga
-COPY --from=build /rootfs/ /
+COPY --from=openfga /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=openfga /openfga /usr/bin/openfga
+# OpenFGA serves HTTP-to-gRPC traffic over a unix socket in a temp dir when it
+# can (falling back to TCP with a warning). The copy is 0755, not 1777, which is
+# enough: the unikernel runs the process as root.
+COPY --from=openfga /tmp /tmp

@@ -90,6 +90,18 @@ jobs:
       - if: failure()
         run: docker compose -f tests/integration/docker-compose.yaml logs openfga | tail -100
 
+  openfga-image:
+    name: OpenFGA rootfs builds and runs the official binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The unikernel rootfs copies the binary out of the pinned official image.
+      - run: docker build --platform linux/amd64 --tag demo-fga-openfga-rootfs infrastructure/unikraft/openfga
+      - name: Check the binary's version
+        run: |
+          . ./versions.env
+          docker run --rm --entrypoint /usr/bin/openfga demo-fga-openfga-rootfs version 2>&1 | tee /dev/stderr | grep -F "\`$OPENFGA_VERSION\`"
+
   api-image:
     name: API rootfs builds and starts
     runs-on: ubuntu-latest
