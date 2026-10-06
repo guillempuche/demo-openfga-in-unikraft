@@ -5,7 +5,7 @@ FROM alpine:3.20 AS base
 ###
 FROM base AS pg-build
 
-ENV PG_VERSION=16.4
+ENV PG_VERSION=16.14
 
 RUN apk add --no-cache --virtual .build-deps \
         coreutils \
