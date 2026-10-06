@@ -9,7 +9,7 @@ import {
   FgaApiValidationError,
   TupleOperation,
 } from '@openfga/sdk'
-import { freshStore, isValidationError, rawApi, rejection } from './helpers.ts'
+import { API_URL, freshStore, isValidationError, rawApi, rejection } from './helpers.ts'
 
 let store: Awaited<ReturnType<typeof freshStore>>
 
@@ -270,10 +270,13 @@ describe('Read', () => {
 
 describe('ReadChanges', () => {
   /** Server timestamp of the latest change on `object` (type-filtered feed). */
-  const changeTime = async (type: string, object: string) => {
-    const { changes } = await store.fga.readChanges({ type }, { pageSize: 100 })
-    return Date.parse(changes.filter((c) => c.tuple_key.object === object).at(-1)!.timestamp)
-  }
+  // OpenFGA's own clock, from its Date header (whole seconds). start_time is
+  // turned into a ULID with OpenFGA's clock and compared with the changes'
+  // ULIDs, while a change's `timestamp` is the database's clock: on Unikraft
+  // OpenFGA and Postgres are separate machines, so a cutoff taken from a
+  // `timestamp` can land before the change itself.
+  const openFgaNow = async () => Date.parse((await fetch(`${API_URL}/healthz`)).headers.get('date')!)
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
   describe('when filtering by type', () => {
     it('[rpc:ReadChanges] should list a write and a delete in order, only for that type', async () => {
@@ -293,12 +296,14 @@ describe('ReadChanges', () => {
 
   describe('when a start time is given', () => {
     it('[rpc:ReadChanges] should exclude changes before it', async () => {
-      // GIVEN an early change and a later one, with the cutoff taken from the
-      // server's own timestamp (a client clock can differ, e.g. through the
+      // GIVEN an early change, a cutoff from OpenFGA's clock more than a second
+      // later, and a later change more than a second after that (the Date
+      // header has whole seconds; a client clock can differ, e.g. through the
       // Unikraft tunnel, and start_time must not be in the future)
       await store.fga.write({ writes: [{ user: 'user:early', relation: 'owner', object: 'task:t2' }] })
-      const cutoff = new Date((await changeTime('task', 'task:t2')) + 1).toISOString()
-      await new Promise((r) => setTimeout(r, 20))
+      await sleep(1100)
+      const cutoff = new Date(await openFgaNow()).toISOString()
+      await sleep(1100)
       await store.fga.write({ writes: [{ user: 'user:late', relation: 'owner', object: 'task:t3' }] })
       // WHEN changes since the cutoff are read
       const since = await store.fga.readChanges({ type: 'task', startTime: cutoff })

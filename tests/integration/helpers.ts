@@ -12,6 +12,7 @@
 // folder). Through the Unikraft tunnel: FGA_API_URL=http://localhost:18080.
 
 import { execFileSync } from 'node:child_process'
+import { Agent } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { CredentialsMethod, FgaApiValidationError, OpenFgaApi, OpenFgaClient, type AuthorizationModel } from '@openfga/sdk'
 
@@ -43,6 +44,14 @@ export function demoModel(): Omit<AuthorizationModel, 'id'> {
 const credentials = { method: CredentialsMethod.ApiToken, config: { token: API_TOKEN } } as const
 
 /** SDK client; no retries, so a failing call fails the test immediately. */
+// Through the Unikraft tunnel, reusing a kept-alive connection fails now and
+// then (the relay drops idle connections without telling the client: the next
+// request stalls until the SDK's 10 s timeout or gets ECONNRESET). Remote runs
+// open a connection per request instead; the local stack keeps the SDK's
+// keep-alive.
+const REMOTE = process.env.FGA_API_URL !== undefined
+const baseOptions = REMOTE ? { httpAgent: new Agent({ keepAlive: false }) } : undefined
+
 export function client(opts: { storeId?: string; authorizationModelId?: string; token?: string | null } = {}) {
   return new OpenFgaClient({
     apiUrl: API_URL,
@@ -55,12 +64,13 @@ export function client(opts: { storeId?: string; authorizationModelId?: string; 
           ? { method: CredentialsMethod.ApiToken, config: { token: opts.token } }
           : credentials,
     retryParams: { maxRetry: 0 },
+    baseOptions,
   })
 }
 
 /** Raw API (no client-side chunking), for testing server-side limits. */
 export function rawApi() {
-  return new OpenFgaApi({ apiUrl: API_URL, credentials, retryParams: { maxRetry: 0 } })
+  return new OpenFgaApi({ apiUrl: API_URL, credentials, retryParams: { maxRetry: 0 }, baseOptions })
 }
 
 /** A fresh store with the demo model; deleted by the returned cleanup. */
