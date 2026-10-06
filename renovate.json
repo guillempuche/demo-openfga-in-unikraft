@@ -91,10 +91,12 @@
       "semanticCommitScope": "authz"
     },
     {
+      "description": "Unikernel images change what gets deployed: cicd, which takes no path scope",
       "matchFileNames": [
         "infrastructure/**"
       ],
-      "semanticCommitScope": "infra"
+      "semanticCommitType": "cicd",
+      "semanticCommitScope": ""
     },
     {
       "description": "Packages pinned in both api/ and tests/integration/: one PR spans both, so no scope",
@@ -122,7 +124,8 @@
       "semanticCommitScope": "",
       "prBodyNotes": [
         "Before merging: update the vendored sources with `git subtree pull --squash` (see `docs/repos/README.md`); for a new fga CLI, update the `sha256` hashes in `flake.nix`; then run `./scripts/check-versions.sh`, the model tests and the integration suite. The fga CLI release must embed the same OpenFGA version as the server."
-      ]
+      ],
+      "semanticCommitType": "chore"
     },
     {
       "matchPackageNames": [
