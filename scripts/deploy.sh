@@ -185,9 +185,12 @@ if [[ "$target" == api || "$target" == all ]]; then
     echo "error: $MODEL_ID_FILE doesn't hold a model id (ULID): $model_id" >&2
     exit 1
   fi
-  if ! unikraft services get "$API_SERVICE" -f name -o json >/dev/null 2>&1; then
-    unikraft services create --metro "$UNIKRAFT_METRO" --name "$API_SERVICE" \
-      --service 443:8080/http+tls --service 80:443/http+redirect -o quiet
+  # The lookup can fail transiently right after the group's instance was
+  # deleted, so a failed create only counts if the group still isn't there.
+  if ! unikraft services get "$API_SERVICE" -f name -o json >/dev/null 2>&1 &&
+    ! unikraft services create --metro "$UNIKRAFT_METRO" --name "$API_SERVICE" \
+      --service 443:8080/http+tls --service 80:443/http+redirect -o quiet 2>/dev/null; then
+    unikraft services get "$API_SERVICE" -f name -o json >/dev/null
   fi
   image="$(pinned_image "$API_IMAGE")"
   cat >"$tmp" <<EOF
