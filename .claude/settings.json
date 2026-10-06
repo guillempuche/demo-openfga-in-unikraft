@@ -1,4 +1,9 @@
 {
+  "enabledPlugins": {
+    "test-bdd@ai-standards": true,
+    "unikraft@ai-standards": true,
+    "commit@ai-standards": true
+  },
   "extraKnownMarketplaces": {
     "ai-standards": {
       "source": {
@@ -6,8 +11,5 @@
         "repo": "guillempuche/ai-standards"
       }
     }
-  },
-  "enabledPlugins": {
-    "unikraft@ai-standards": true
   }
 }
