@@ -12,10 +12,10 @@ Example of OpenFGA (ReBAC, fine-grained authorization) running on Unikraft Cloud
 | --- | --- | --- |
 | OpenFGA | v1.21.0, `http://localhost:8080` (via Caddy), key `dev-key-1` | v1.21.0, `demo-fga-openfga.internal:8080`, no public port; tunnel: `localhost:18080` |
 | Playground | optional `--profile playground`: `http://localhost:8082/playground`, its API `localhost:8090` without auth | disabled |
-| PostgreSQL | 17.2, host port 5435 | 16.4, `demo-fga-postgres.internal:5432`, volume `demo-fga-pgdata` (512MiB) |
-| API | `cd api && FGA_KEY=dev-key-1 FGA_API_URL=http://localhost:8080 PORT=3001 npm start` | `demo-fga-api`, public HTTPS 443→8080: `/health`, `/check`, `/batch-check`, `/list-objects`, `/bench`, `/openapi.json` |
+| PostgreSQL | 17.2, host port 5435 | 16.4, `demo-fga-postgres.internal:5432`, volume `demo-fga-pgdata` (512MiB), scales to zero when idle (stateful) |
+| API | `cd api && FGA_KEY=dev-key-1 FGA_API_URL=http://localhost:8080 PORT=3001 npm start` | `demo-fga-api`, public HTTPS 443→8080 through the persistent service group `demo-fga-api` (stable URL): `/health`, `/check`, `/batch-check`, `/list-objects`, `/bench`, `/openapi.json`, `/docs` |
 | Config | `authz/.env` (from `authz/.env.example`) | root `.env` (from `.env.example`): `UNIKRAFT_PROFILE`, `FGA_KEY`, `POSTGRES_PASSWORD`, optional `OPENFGA_DATASTORE_URI` |
-| Store | create with `fga store create` (no fixed ID) | `demo-fga`, created by `scripts/seed.sh`; the API finds it by name |
+| Store | create with `fga store create` (no fixed ID) | `demo-fga`, created by `scripts/seed.sh`; the API finds it by name and pins the model id `seed.sh` records in `.cache/fga-model-id` (`FGA_MODEL_ID`) |
 
 Versions are pinned in `versions.env` (OpenFGA v1.21.0, fga CLI 0.8.1); `scripts/check-versions.sh` fails CI if the Dockerfile, compose file, CI or `docs/repos` disagree. Upgrade them together. Renovate (`renovate.json`) proposes those bumps as one "OpenFGA" PR via custom regex managers; a new pin location needs a matching regex there and a check in `check-versions.sh`. Tooling: OpenFGA CLI `fga` (0.8.1, which embeds the same OpenFGA version), `unikraft` CLI 0.5.x (not the deprecated `kraft cloud`), Node.js 24 (runs `.ts` natively), Docker with BuildKit, jq, Python 3, shellcheck, grpcurl. `nix develop` provides all of them except Docker.
 
@@ -78,7 +78,7 @@ Integration tests are named `[rpc:<Name>] ...` (the API gate counts them) and us
 
 ```bash
 ./scripts/build.sh            # build each image to a local OCI archive, then `unikraft images copy` it
-./scripts/deploy.sh           # postgres → migrate → openfga → api
+./scripts/deploy.sh           # postgres → migrate → openfga → api (first time: `deploy.sh backend`, tunnel, seed, then `deploy.sh api`)
 ./scripts/tunnel.sh           # foreground; 3 tunnels (HTTP 18080, gRPC 18081, metrics 12112); stop with Ctrl-C/one SIGTERM
 ./scripts/seed.sh             # needs the tunnel
 ./scripts/test-remote.sh      # fga model test against the deployed server on a fresh store (needs the tunnel)
@@ -86,7 +86,7 @@ Integration tests are named `[rpc:<Name>] ...` (the API gate counts them) and us
 ./scripts/check-e2e.sh        # write → public API sees it → delete; store fingerprint vs the last run (needs the tunnel)
 ./scripts/verify.sh           # public API answers, .internal = private IP, exposure checks; non-zero exit on failure
 ./scripts/measure-wake.sh     # API response time from standby vs running (10 runs)
-./scripts/cleanup.sh          # delete demo-fga-* instances (keeps volume and images)
+./scripts/cleanup.sh          # delete demo-fga-* instances (keeps volume, images and the API's service group; --service / --all delete more)
 ```
 
 Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. Instances run images by digest: `build.sh` records each pushed digest in `.cache/image-digests`, `deploy.sh` runs those (or pins the registry's current digest when none is recorded), and `verify.sh` fails on a tag or a different digest. To deploy a newer image, build it; to deploy another machine's build, delete its line from `.cache/image-digests`. Building the postgres image takes about 11 minutes (PostgreSQL compiled under emulation on Apple Silicon).
@@ -97,14 +97,16 @@ Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. 
 - **Touch only `demo-fga-*`** instances, volumes and images. Tunnel relays are named `inst-*` (image `utils/tunnel`); close the tunnel with one signal (a second one orphans the relay, which stays publicly addressable). Delete a relay by name only if its tunnel process is gone, after checking its image is `utils/tunnel`.
 - **Never print secrets.** `unikraft instances get`, `wait`, `delete` and `list -o json|yaml` include `runtime.env` (passwords, keys) unless you pass `-f <fields>` or `-o quiet`. `unikraft run --dry-run` also prints env values. Pipe `unikraft instances logs` through the `redact` function in `scripts/env.sh`. Don't `cat .env`, run `env`/`printenv`, or use `set -x`.
 - **Keep secrets off argv.** `unikraft run -e` only takes `KEY=VALUE`; `scripts/deploy.sh` writes a 0600 YAML spec and uses `--load` instead. `yq_str` quotes values through stdin.
-- **Ask before data loss.** `cleanup.sh --volume` or `--all` deletes the Postgres volume (store, model and tuples).
+- **Ask before data loss.** `cleanup.sh --volume` or `--all` deletes the Postgres volume (store, model and tuples); `--service` or `--all` deletes the API's service group, and with it the public URL.
+- **No secrets in Kraftfiles.** Kraftfile `env` is baked into the image config, readable with registry access; `scripts/check-kraftfiles.sh` enforces it. Secrets go through `deploy.sh`.
+- **Keep `FGA_MODEL_ID` out of the scripts' environment.** The fga CLI reads it too; `seed.sh`, `test-remote.sh` and `check-e2e.sh` unset it. The API gets it only through the deploy spec.
 - **Keep the two-step build.** A direct `unikraft build --output <org>/<image>` fails with `failed to package kernel … connection reset by peer` on slow or VPN links.
 
 ## Conventions
 
 - Commit messages: `type(scope): subject` in the imperative, with a bulleted past-tense body; types `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `cicd`, `ai`; scopes `authz`, `api`, `infra`, `nix`. Full rules: [.agents/skills/git-commit-messages/SKILL.md](.agents/skills/git-commit-messages/SKILL.md).
 - Shell scripts: `#!/usr/bin/env bash`, source `scripts/env.sh`, pass `shellcheck -x -S warning`.
-- The API uses Effect 4 (`effect`, `@effect/platform-node`) and `@openfga/sdk`, pinned to exact versions; `npm run build` bundles them with esbuild into `api/dist/server.mjs`, the only file the unikernel ships. Import `@effect/platform-node/NodeHttpServer` and `/NodeRuntime` directly: the package index re-exports a Redis client, which `npm start` (unbundled) would load; the bundle drops it either way. Keep TypeScript to erasable syntax (`erasableSyntaxOnly`) so `npm start` runs `src/main.ts` without a build. Endpoints, payloads and errors are declared once in `api/src/api.ts`; `server.test.ts` tests the bundle as a black box against a stub OpenFGA (`npm test`); `integration.test.ts` runs it against the integration compose OpenFGA (`npm run test:integration`).
+- The API uses Effect 4 (`effect`, `@effect/platform-node`) and `@openfga/sdk`, pinned to exact versions; `npm run build` bundles them with esbuild into `api/dist/server.mjs`, the only file the unikernel ships. Import `@effect/platform-node/NodeHttpServer` and `/NodeRuntime` directly: the package index re-exports a Redis client, which `npm start` (unbundled) would load; the bundle drops it either way. Keep TypeScript to erasable syntax (`erasableSyntaxOnly`) so `npm start` runs `src/main.ts` without a build. Endpoints, payloads and errors are declared once in `api/src/api.ts`; request-schema errors go through `HttpApiMiddleware.layerSchemaErrorTransform` (`api/src/main.ts`), not a router middleware. Condition context (`current_time`, `user_ip`) is set by the API, never by callers (`api/src/handlers.ts`). `server.test.ts` tests the bundle as a black box against a stub OpenFGA (`npm test`); `integration.test.ts` runs it against the integration compose OpenFGA (`npm run test:integration`).
 - Model tests live next to `fga.mod` (the CLI refuses model files outside the test file's directory), one file per feature, marked `# feature:` in both the `.fga` and `.fga.yaml` files. Tests are BDD style: one behaviour per test, named `<actor> should <behaviour>`, with `# GIVEN`/`# WHEN`/`# THEN` comments (shared tuples via YAML anchors). The fga CLI can't express contextual tuples or expected errors in model tests; put those in `tests/integration/`. Any model change must keep `scripts/check-model-coverage.py` green: add tests rather than exemptions; an exemption in `authz/models/coverage-exemptions.txt` needs a reason.
 - `docs/repos/` is reference material for reading OpenFGA internals: never edit it; update it with `git subtree pull --squash` (see `docs/repos/README.md`). The `AGENTS.md`, `CLAUDE.md` and Copilot instruction files inside it are upstream contributor rules and don't apply to this repo. It is listed in `.ignore`, so `rg`/search skip it by default; search it on purpose with an explicit path (`rg ListUsers docs/repos/openfga`).
 

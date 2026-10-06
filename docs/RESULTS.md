@@ -213,6 +213,66 @@ Scripted checks with pass/fail output, run against the deployment above:
 
 The first `check-e2e.sh` run failed in a useful way. The deployment enables OpenFGA's check cache (`OPENFGA_CHECK_QUERY_CACHE_ENABLED=true`, 10 s TTL), so the Check right after the write returned the `false` cached by the Check before it. `/check` now takes `consistency=HIGHER_CONSISTENCY`, which skips the cache, and the script uses it for reads that must see a write. (The same run also had a jq bug: `.allowed // "error"` turns `false` into `"error"`.)
 
+## Official binary, production settings, scale-to-zero and a stable URL (2026-10-06)
+
+Deployed with `cleanup.sh && deploy.sh` (volume kept), then checked with `check-e2e.sh`, `test-remote.sh`, `test-integration-remote.sh` and `verify.sh`.
+
+| Check | Result |
+| --- | --- |
+| OpenFGA binary | The official `openfga/openfga:v1.21.0` binary (commit `ab557c55`, from the cosign-signed index digest), not a source build |
+| Baked defaults | The image config holds only the 6 non-secret settings; the migration found schema version 6 in Postgres with `deploy.sh` no longer setting the engine, and logs are JSON |
+| Production settings | OpenFGA's startup config shows preshared authn, max results 100, 10 concurrent reads, max open connections 20, datastore metrics and RPC histograms on |
+| Public URL | `demo-fga-api-cux9mlq9.fra.unikraft.app` before and after a full redeploy; with no instance attached the domain answers HTTP 404 |
+| Pinned model | `/health` reports `{"id":"01M471HC7HHMGCKMQ097G2RK8D","pinned":true}`; a second `seed.sh` reported "model unchanged" |
+| Data across the redeploy | `check-e2e.sh`: same store and tuple hash (only the model id changed, written by `seed.sh` before the redeploy); write → API → delete passed |
+| `fga model test` remote | 109/109 tests, 323/323 checks, 14/14 ListObjects, 17/17 ListUsers |
+| Integration suite remote | 138/138 twice in a row; API gate 19/19 core RPCs (AuthZEN excluded: experimental tier off) |
+| `verify.sh` | All checks passed, including pinned digests, restart policy `always` and the persistent service group |
+| `/bench` p50 (3 runs, n=100) | 1.083 / 0.931 / 0.761 ms |
+| API memory | 28.7 MiB RSS after the benches |
+| API wake from standby (`measure-wake.sh`, 10 runs) | p50 0.946 s from standby vs 0.730 s running (+0.22 s). Maxima of 12 s and 6 s came from this machine's network path, the same VPN that dropped the tunnel during these runs |
+
+### Restart policies (throwaway `demo-fga-restart-test` instances, deleted after)
+
+| Policy | App exits 1 | App exits 0 |
+| --- | --- | --- |
+| `on-failure` | restarted (start count 2 → 5, back-off 0 / 5 / 10 s) | stays stopped |
+| `always` | restarted | restarted |
+
+Postgres, OpenFGA and the API now use `always`; the migration keeps `never`.
+
+### What the platform's HTTP proxy sends (throwaway instance echoing its request)
+
+| Header | Received by the instance |
+| --- | --- |
+| `X-Forwarded-For` | The caller's public address; a forged `X-Forwarded-For: 1.2.3.4` was replaced, not appended |
+| `X-Real-IP` | Passed through unchanged when the caller sends one (so never trusted) |
+| TCP peer | The proxy's private address (`::ffff:10.0.10.126`) |
+
+The API reads `user_ip` from `X-Forwarded-For` on Unikraft (`CLIENT_IP_FROM=x-forwarded-for`).
+
+### Postgres scale-to-zero
+
+| OpenFGA pool | Postgres with `idle` + `stateful` |
+| --- | --- |
+| Production guide's warm pool (min open 5, min idle 3) | Stayed `running` for 6.5 minutes with no traffic |
+| No minimum pool, idle connections closed after 30 s | `standby` after ~89 s |
+
+Measured from inside the network (the API's own `ms` for `/check?…&consistency=HIGHER_CONSISTENCY`, which skips OpenFGA's cache):
+
+| Round | First check from Postgres standby | Next 3 checks |
+| --- | --- | --- |
+| 1 | 83.4 ms | 7.9, 7.5, 8.6 ms |
+| 2 | 82.8 ms | 7.9, 7.4, 7.8 ms |
+| 3 | 80.9 ms | 7.3, 6.9, 7.5 ms |
+
+The deployment uses scale-to-zero. Checks answered from OpenFGA's 10 s check cache never reach Postgres.
+
+### Two findings from running the suite against the deployment
+
+- **Tunnel connections.** Three remote runs had 117, 131 and 132 of 138–139 tests passing. The failures were 10 s client timeouts and `ECONNRESET`, on different tests each time. OpenFGA's own log showed all 986 requests answered, the slowest in 976 ms (gRPC reflection), with only the response codes the tests expect. With one connection per request instead of kept-alive ones, two runs in a row passed 138/138 with no timeouts.
+- **ReadChanges clocks.** A cutoff 1 ms after a change's `timestamp` still returned that change. OpenFGA converts `start_time` to a ULID with its own clock and filters on the changes' ULIDs, but `timestamp` is Postgres's `inserted_at` (`docs/repos/openfga/pkg/server/commands/read_changes.go`, `pkg/storage/postgres/postgres.go`), and the two run on different machines here. The test now takes the cutoff from OpenFGA's `Date` header.
+
 ## Build notes
 
 - Building OpenFGA from its Kraftfile failed with `dockerfile context does not exist` until the `rootfs` path was fixed.

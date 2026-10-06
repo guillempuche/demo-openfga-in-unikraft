@@ -268,7 +268,7 @@ await fga.check({ user: 'user:late', relation: 'viewer', object: 'project:consis
   { consistency: ConsistencyPreference.HigherConsistency })
 ```
 
-Demo API: `GET /check?user=&relation=&object=[&consistency=HIGHER_CONSISTENCY]`.
+Demo API: `GET /check?user=&relation=&object=[&consistency=HIGHER_CONSISTENCY]`. The API adds the condition context itself: `current_time` from its clock, rounded down to 10 s, and the caller's `user_ip`. Callers can't send context, so a condition that needs `region` or `plan` answers 400 through the API.
 
 Tests: "[rpc:Check] should let an owner who is an org member share the project", "[rpc:Check] should allow through a contextual tuple", "[rpc:Check] should not store the contextual tuple", "[rpc:Check] should see a write made after a cached denial", "[rpc:Check] should see a revocation made after a cached approval", "[rpc:Check] should answer with that model", "[rpc:Check] should reject an unknown model id", "[rpc:Check] should reject more than 100 contextual tuples", "[rpc:Check] should answer over gRPC like over HTTP".
 
@@ -372,7 +372,7 @@ Tests: "[rpc:ListStores] should answer 401 bearer_token_missing", "[rpc:Check] s
 
 ### The check cache and consistency
 
-With `OPENFGA_CHECK_QUERY_CACHE_ENABLED=true` (the Unikraft deployment turns it on), OpenFGA reuses Check answers for `OPENFGA_CHECK_QUERY_CACHE_TTL`, 10 s by default. A Check right after a write can return the old answer; on Unikraft it did (see [RESULTS.md](RESULTS.md)). Pass `consistency: HIGHER_CONSISTENCY` for reads that must see a write, and keep the default, `MINIMIZE_LATENCY`, for everything else.
+With `OPENFGA_CHECK_QUERY_CACHE_ENABLED=true` (the Unikraft deployment turns it on), OpenFGA reuses Check answers for `OPENFGA_CHECK_QUERY_CACHE_TTL`, 10 s by default. A Check right after a write can return the old answer; on Unikraft it did (see [RESULTS.md](RESULTS.md)). Pass `consistency: HIGHER_CONSISTENCY` for reads that must see a write, and keep the default, `MINIMIZE_LATENCY`, for everything else. The request context is part of the cache key, so a context that changes on every request (an exact timestamp) skips the cache; the demo API rounds `current_time` down to 10 s for that reason.
 
 Tests: "[rpc:Check] should see a write made after a cached denial", "[rpc:Check] should see a revocation made after a cached approval"; [`scripts/check-e2e.sh`](../scripts/check-e2e.sh) does the same through the public API on Unikraft.
 

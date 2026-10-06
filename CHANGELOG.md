@@ -2,6 +2,33 @@
 
 Notable changes to this example. Results behind each claim are in [docs/RESULTS.md](docs/RESULTS.md).
 
+## [Unreleased]
+
+### Deployment
+
+- Ran the official, cosign-signed OpenFGA binary (pinned by digest) instead of a source build, checked in CI.
+- Applied OpenFGA's production settings: query limits, concurrent-read limits, datastore metrics and RPC histograms.
+- Kept the API's public URL across redeploys with a persistent service group; `cleanup.sh --service` deletes it.
+- Restarted Postgres, OpenFGA and the API whenever they exit (`restart: always`).
+- Let Postgres scale to zero (idle, stateful), with OpenFGA closing idle connections; measured ~82 ms for the first uncached check after a quiet period.
+- Baked safe, non-secret OpenFGA defaults into the image, with a CI check that keeps secrets out of Kraftfiles.
+- Pinned the authorization model in the API; `seed.sh` writes a model only when it changed.
+- Checked pushed digests with `images get` instead of the lagging image listing; added healthchecks to both compose stacks.
+
+### API
+
+- Reported client mistakes as 400 (including duplicate correlation ids) and per-item OpenFGA errors in `/batch-check`.
+- Used Effect's schema-error hook (response bugs answer 500), a typed 415, `Cache`, `Semaphore` and JSON fatal logs.
+- Sent a trusted `current_time` and the client's `user_ip` with every check, so the model's conditions work through the API.
+- Added `/docs`, `FGA_MODEL_ID`, `CLIENT_IP_FROM`, `CURRENT_TIME_STEP` and `FGA_STORE_CACHE_TTL`.
+
+### Authorization model and tests
+
+- Applied blocks to direct list and task grants and through the folder's org; gave grants a start time; limited exporters to the project's org; let folder owners manage their projects.
+- Rewrote every test in BDD style: 109 model tests, 151 integration tests, 157 API tests against a stub and 27 against a real OpenFGA.
+- Added condition-boundary mutants to the model coverage gate.
+- Added Renovate, grouping OpenFGA server and CLI bumps in one PR.
+
 ## [0.1.0] - 2026-10-05
 
 First tagged version: OpenFGA v1.21.0 and PostgreSQL 16 as private Unikraft Cloud instances, behind a public TypeScript API.

@@ -9,15 +9,17 @@ Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grain
 
 | What | Result ([details](docs/RESULTS.md)) |
 | --- | --- |
-| API → OpenFGA over `.internal`, warm check | p50 0.74–0.87 ms (Effect API; 1.0–1.3 ms before), 100 sequential checks |
+| API → OpenFGA over `.internal`, warm check | p50 0.76–1.08 ms (Effect API, OpenFGA official binary), 100 sequential checks |
+| Postgres scale-to-zero | Standby after ~90 s of quiet; the first uncached check then takes ~82 ms, the next 7–8 ms |
+| Public URL across a full redeploy | Unchanged (persistent service group) |
 | Write through the tunnel → public API sees it → delete → API sees that | ✅ before and after a full redeploy; store, model and tuples unchanged |
 | API woken from scale-to-zero standby | p50 +0.21 s over a running instance (10 runs) |
 | Same, OpenFGA check cache off (1 Postgres round trip) | p50 1.5–1.8 ms |
 | Exposure | No service on OpenFGA or Postgres; ports 8080/8081/3000/2112/5432 don't answer; no key → `401` |
 | Redeploy (delete + run, 32 s) | Every private IP changed and was reused by another instance; `.internal` names kept working with no config change |
-| `fga model test` against the deployed server (v1.21.0, fresh store) | 28/28 tests: 190 checks, 11 ListObjects, 16 ListUsers |
-| OpenFGA API | All 19 core RPCs called and asserted on Unikraft (server metrics as proof); +6 AuthZEN RPCs on the experimental local/CI stack |
-| Memory | OpenFGA 17.6 MiB RSS, API 25 MiB RSS idle (512 MiB allocated each) |
+| `fga model test` against the deployed server (v1.21.0, fresh store) | 109/109 tests: 323 checks, 14 ListObjects, 17 ListUsers |
+| OpenFGA API | All 19 core RPCs called and asserted on Unikraft in 138 tests (server metrics as proof); +6 AuthZEN RPCs on the experimental local/CI stack |
+| Memory | OpenFGA 17.6 MiB RSS, API 25–29 MiB RSS (512 MiB allocated each) |
 
 ## Contents
 
@@ -135,48 +137,63 @@ The postgres image compiles PostgreSQL 16.4 from source for x86_64; on Apple Sil
 
 ### Deploy
 
+The first time, deploy the backend, seed it, then deploy the API, so the API pins the seeded model from its first start:
+
 ```bash
-./scripts/deploy.sh           # postgres → migrate → openfga → api
-# or step by step:
-./scripts/deploy.sh postgres  # private, 512MiB, volume demo-fga-pgdata, scale-to-zero off
-./scripts/deploy.sh migrate   # one-off `openfga migrate` instance on the private network (retried, must exit 0), then deleted
-./scripts/deploy.sh openfga   # private, 512MiB, --scale-to-zero policy=off
-./scripts/deploy.sh api       # public HTTPS, 512MiB, scale-to-zero on (5s cooldown)
+./scripts/deploy.sh backend   # postgres → migrate → openfga
+./scripts/tunnel.sh           # another terminal (see below)
+./scripts/seed.sh             # store, model and tuples; records the model id in .cache/fga-model-id
+./scripts/deploy.sh api       # public HTTPS, pinned to that model
 ```
 
-Instances run images by digest (`<org>/demo-fga-api@sha256:…`), not `:latest`: `deploy.sh` uses the digest `build.sh` recorded, so a redeploy runs exactly the images that were built and verified, even if `:latest` has moved since. With nothing recorded (a fresh clone, images built on another machine), it pins and records the registry's current digest. `verify.sh` fails if an instance runs a tag or a digest other than the recorded one.
+After that, `./scripts/deploy.sh` deploys everything in that order. Each step can also run alone:
 
-OpenFGA follows the [production guide](https://openfga.dev/docs/best-practices/running-in-production): check cache on, datastore metrics and RPC latency histograms on, a small Postgres connection baseline, and, because the public API forwards any caller's query, ListObjects/ListUsers capped at 100 results with at most 10 concurrent datastore reads per query. Not applied: TLS between the API and OpenFGA (the private network is unencrypted) and tracing (no collector).
+```bash
+./scripts/deploy.sh postgres  # private, 512MiB, volume demo-fga-pgdata, scales to zero when idle (stateful)
+./scripts/deploy.sh migrate   # one-off `openfga migrate` instance on the private network (retried, must exit 0), then deleted
+./scripts/deploy.sh openfga   # private, 512MiB, never scales to zero
+./scripts/deploy.sh api       # public HTTPS through the persistent service group demo-fga-api, scale-to-zero on (5s cooldown)
+```
+
+- **Stable URL.** The API's public domain belongs to a persistent service group, `demo-fga-api`, created on the first deploy. It survives `cleanup.sh` and every redeploy (measured: same FQDN after a full redeploy); while no instance is attached, the domain answers 404. `cleanup.sh --service` deletes it.
+- **Restarts.** Postgres, OpenFGA and the API use restart policy `always`. Measured with throwaway instances: `on-failure` restarts an `exit(1)` but not an `exit(0)`; `always` restarts both. Scale-to-zero stops and deletes are never restarted.
+- **Postgres scales to zero**, as in the official [Postgres example](https://github.com/unikraft-cloud/examples/tree/main/postgres): `idle` (standby while its connections are quiet) and `stateful` (resumed with its memory). For that, OpenFGA keeps no minimum connection pool and closes idle connections after 30 s; with the production guide's warm pool (5 open connections), Postgres never reached standby. Measured from inside the network: the first uncached check after ~90 s of quiet takes ~82 ms (Postgres wakes, OpenFGA reconnects), the next ones 7–8 ms. Checks answered from OpenFGA's cache never touch Postgres.
+- **Safe defaults in the image.** The OpenFGA Kraftfile bakes the non-secret settings (Postgres engine, preshared authn, Playground off, JSON logs) into the image, so even a manual `unikraft run` fails closed. `deploy.sh` passes only secrets and tunables; `scripts/check-kraftfiles.sh` (in CI) fails if a Kraftfile `env` key looks like a secret.
+- **Pinned model.** `seed.sh` writes a new model only when `authz/models` changed, records its id, and the API runs with `FGA_MODEL_ID`, so a model write never goes live by itself. Switch models on purpose: seed, then redeploy.
+
+**Images by digest.** Instances run images by digest (`<org>/demo-fga-api@sha256:…`), not `:latest`: `deploy.sh` uses the digest `build.sh` recorded, so a redeploy runs exactly the images that were built and verified, even if `:latest` has moved since. With nothing recorded (a fresh clone, images built on another machine), it pins and records the registry's current digest. `verify.sh` fails if an instance runs a tag or a digest other than the recorded one.
+
+**OpenFGA settings** follow the [production guide](https://openfga.dev/docs/best-practices/running-in-production): the official signed binary, check cache on, datastore metrics and RPC latency histograms on, and, because the public API forwards any caller's query, ListObjects/ListUsers capped at 100 results with at most 10 concurrent datastore reads per query. Not applied: the guide's warm connection pool (traded for Postgres scale-to-zero, see above), TLS between the API and OpenFGA (the private network is unencrypted) and tracing (no collector).
 
 What it runs, shown as flags (`<digest>` is the pinned one). The script passes the same fields with `unikraft run --load <0600 YAML>` so secrets never appear on the command line:
 
 ```bash
 unikraft volumes create --metro fra --name demo-fga-pgdata --size 512MiB
 unikraft run --metro fra -n demo-fga-postgres --image <org>/demo-fga-postgres@<digest> \
-  -m 512MiB --scale-to-zero policy=off --restart on-failure -v demo-fga-pgdata:/volume \
+  -m 512MiB --scale-to-zero policy=idle,stateful=true,cooldown-time=30000 --restart always -v demo-fga-pgdata:/volume \
   -e POSTGRES_USER=openfga -e POSTGRES_DB=openfga -e POSTGRES_PASSWORD=... -e PGDATA=/volume/postgres
 
 unikraft run --metro fra -n demo-fga-migrate --image <org>/demo-fga-openfga@<digest> \
   -m 256MiB --restart never --args "/usr/bin/openfga migrate" \
-  -e OPENFGA_DATASTORE_ENGINE=postgres \
   -e OPENFGA_DATASTORE_URI=postgres://openfga:...@demo-fga-postgres.internal:5432/openfga?sslmode=disable
 
 unikraft run --metro fra -n demo-fga-openfga --image <org>/demo-fga-openfga@<digest> \
-  -m 512MiB --scale-to-zero policy=off --restart on-failure \
-  -e OPENFGA_DATASTORE_ENGINE=postgres -e OPENFGA_DATASTORE_URI=... \
-  -e OPENFGA_AUTHN_METHOD=preshared -e OPENFGA_AUTHN_PRESHARED_KEYS=... \
-  -e OPENFGA_PLAYGROUND_ENABLED=false -e OPENFGA_CHECK_QUERY_CACHE_ENABLED=true \
-  -e OPENFGA_DATASTORE_MAX_OPEN_CONNS=20 -e OPENFGA_DATASTORE_MIN_OPEN_CONNS=5 -e OPENFGA_DATASTORE_MIN_IDLE_CONNS=3 \
+  -m 512MiB --scale-to-zero policy=off --restart always \
+  -e OPENFGA_DATASTORE_URI=... -e OPENFGA_AUTHN_PRESHARED_KEYS=... -e OPENFGA_CHECK_QUERY_CACHE_ENABLED=true \
+  -e OPENFGA_DATASTORE_MAX_OPEN_CONNS=20 -e OPENFGA_DATASTORE_CONN_MAX_IDLE_TIME=30s \
   -e OPENFGA_LIST_OBJECTS_MAX_RESULTS=100 -e OPENFGA_LIST_USERS_MAX_RESULTS=100 \
   -e OPENFGA_MAX_CONCURRENT_READS_FOR_CHECK=10 -e OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_OBJECTS=10 \
   -e OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_USERS=10 \
   -e OPENFGA_DATASTORE_METRICS_ENABLED=true -e OPENFGA_METRICS_ENABLE_RPC_HISTOGRAMS=true
 
-unikraft run --metro fra -n demo-fga-api --image <org>/demo-fga-api@<digest> \
-  -m 512MiB -p 443:8080/http+tls -p 80:443/http+redirect \
-  --scale-to-zero policy=on,cooldown-time=5000 --restart on-failure \
-  -e FGA_API_URL=http://demo-fga-openfga.internal:8080 -e FGA_KEY=...
+unikraft services create --metro fra --name demo-fga-api --service 443:8080/http+tls --service 80:443/http+redirect   # once
+unikraft run --metro fra -n demo-fga-api --image <org>/demo-fga-api@<digest> --service demo-fga-api \
+  -m 512MiB --scale-to-zero policy=on,cooldown-time=5000 --restart always \
+  -e FGA_API_URL=http://demo-fga-openfga.internal:8080 -e FGA_KEY=... \
+  -e CLIENT_IP_FROM=x-forwarded-for -e FGA_MODEL_ID=<seeded model id>
 ```
+
+The OpenFGA image already carries `OPENFGA_DATASTORE_ENGINE=postgres`, `OPENFGA_AUTHN_METHOD=preshared`, `OPENFGA_PLAYGROUND_ENABLED=false`, `OPENFGA_HTTP_ADDR=0.0.0.0:8080` and JSON logs ([Kraftfile](infrastructure/unikraft/openfga/Kraftfile)).
 
 Inspect without printing secrets (private IP under `networks`):
 
@@ -191,7 +208,7 @@ unikraft instances get demo-fga-openfga -f name,state,networks,service
 
 ```bash
 ./scripts/tunnel.sh                   # terminal 1: localhost:18080 -> 8080 (HTTP), 18081 -> 8081 (gRPC), 12112 -> 2112 (metrics)
-./scripts/seed.sh                     # terminal 2: create store "demo-fga", write model + synthetic tuples
+./scripts/seed.sh                     # terminal 2: create store "demo-fga", write the model if it changed + synthetic tuples, record the model id
 ./scripts/test-remote.sh              # fga model test against the deployed server, on a fresh store
 ./scripts/test-integration-remote.sh  # every OpenFGA RPC against the deployed server (see Integration tests)
 ./scripts/check-e2e.sh                # write a tuple through the tunnel, see it (and its deletion) through the public API
@@ -199,7 +216,7 @@ unikraft instances get demo-fga-openfga -f name,state,networks,service
 
 `check-e2e.sh` also prints a fingerprint of the `demo-fga` store (store ID, latest model ID, hash of the stored tuples) and compares it with the previous run. Run it before and after a redeploy to show the data survived.
 
-Stop `tunnel.sh` with Ctrl-C: it closes all three tunnels with one signal each, which removes their relay instances.
+Stop `tunnel.sh` with Ctrl-C: it closes all three tunnels with one signal each, which removes their relay instances. If the tunnel's control connection drops (seen on a VPN: `control relay … broken pipe`), the CLI can't delete its relays itself; check `unikraft instances list` for `utils/tunnel` instances afterwards (none were left when it happened here).
 
 ### Verify
 
@@ -207,26 +224,28 @@ Stop `tunnel.sh` with Ctrl-C: it closes all three tunnels with one signal each, 
 ./scripts/verify.sh
 ```
 
-It calls the public API and checks the answers (`/health` reaches OpenFGA; `/check`, `/batch-check` and `/list-objects` allow alice and deny mallory; three `/bench` runs). It compares what `demo-fga-openfga.internal` resolves to from inside the API with the instance's current private IP. It also checks that OpenFGA and Postgres have no service, that no `demo-fga-*` instance other than the API and no open tunnel relay has a public domain (other workloads on the account are ignored), and that ports 8080/8081/3000/2112/5432 don't answer. It exits non-zero if any check fails.
+It calls the public API and checks the answers (`/health` reaches OpenFGA; `/check`, `/batch-check` and `/list-objects` allow alice and deny mallory; three `/bench` runs). It compares what `demo-fga-openfga.internal` resolves to from inside the API with the instance's current private IP, checks that every instance runs its recorded image digest with restart policy `always`, and that the API sits in the persistent service group. It also checks that OpenFGA and Postgres have no service, that no `demo-fga-*` instance other than the API and no open tunnel relay has a public domain (other workloads on the account are ignored), and that ports 8080/8081/3000/2112/5432 don't answer. It exits non-zero if any check fails.
 
 To time a wake from scale-to-zero, run `./scripts/measure-wake.sh [runs]`: it waits for the API to go to standby, then times `/health` from standby and while running.
 
 API endpoints:
 
-- `GET /health`: API status, OpenFGA reachability, what `demo-fga-openfga.internal` resolves to, and process memory.
+- `GET /health`: API status, OpenFGA reachability, what `demo-fga-openfga.internal` resolves to, the model in use (`{id, pinned}`) and process memory.
 - `GET /check?user=user:alice&relation=can_edit&object=project:roadmap[&consistency=HIGHER_CONSISTENCY]`: one Check. The deployment enables OpenFGA's check cache, so a check right after a write can return the old answer for up to 10 s; `HIGHER_CONSISTENCY` skips the cache.
 - `POST /batch-check` with `{"checks":[{"correlationId":"a","user":"…","relation":"…","object":"…"}]}`: 1 to 50 Checks in one call, with unique correlation ids. Results come back in request order, each with `allowed`, or with `error` when OpenFGA couldn't evaluate that item.
 - `GET /list-objects?user=user:alice&relation=can_view&type=project`: the objects of a type the user can reach.
 - `GET /bench[?n=100&user=&relation=&object=]`: 1 to 100 sequential Checks (default 100) after 3 warm-up calls; returns p50/p95/max/min/mean in ms.
-- `GET /openapi.json`: the OpenAPI document, generated from the same schemas that validate requests.
+- `GET /openapi.json`: the OpenAPI document, generated from the same schemas that validate requests; `GET /docs` renders it.
 
-Errors are JSON, `{"_tag": "…", "message": "…"}`: `BadRequest` (400, including invalid query or body and OpenFGA's validation errors), `Busy` (429, a bench is already running) and `UpstreamError` (502, OpenFGA failed or timed out after 5 s, with its HTTP status in the message). Only OpenFGA 5xx and network errors are retried, once.
+`/check`, `/batch-check` and `/list-objects` send OpenFGA a condition context the API vouches for: `current_time` (the server clock rounded down to `CURRENT_TIME_STEP`, default 10 s, because the context is part of OpenFGA's check-cache key) and `user_ip`, the caller's address. Callers can't add parameters, so conditions that need `region` or `plan` can't be decided through the public API (400). On Unikraft, `user_ip` comes from `X-Forwarded-For`: measured, the platform's proxy replaces that header with the caller's address (a forged value doesn't survive), passes `X-Real-IP` through untouched (never trusted), and the TCP peer is the proxy itself. Any instance in the same account can reach the API's port directly and send its own header.
 
-Configuration (environment): `FGA_KEY` (required, non-empty), `FGA_API_URL` (default `http://demo-fga-openfga.internal:8080`; only its origin is used), `FGA_STORE_NAME` (default `demo-fga`) or `FGA_STORE_ID` (a ULID; pins the store), `FGA_STORE_CACHE_TTL` (how long the store and model lookup is cached, default `30 seconds`) and `PORT` (default 8080). The process exits at startup if any of them is invalid.
+Errors are JSON, `{"_tag": "…", "message": "…"}`: `BadRequest` (400, including invalid query or body and OpenFGA's validation errors), `UnsupportedMediaType` (415, `/batch-check` without a JSON body), `Busy` (429, a bench is already running) and `UpstreamError` (502, OpenFGA failed or timed out after 5 s, with its HTTP status in the message). A 500 is a bug in the API: it's logged as one JSON `ERROR` line. Only OpenFGA 5xx and network errors are retried, once.
+
+Configuration (environment): `FGA_KEY` (required, non-empty), `FGA_API_URL` (default `http://demo-fga-openfga.internal:8080`; only its origin is used), `FGA_STORE_NAME` (default `demo-fga`) or `FGA_STORE_ID` (a ULID; pins the store), `FGA_MODEL_ID` (a ULID; pins the model, otherwise the store's latest), `FGA_STORE_CACHE_TTL` (how long the store and model lookup is cached, default `30 seconds`), `CLIENT_IP_FROM` (`socket`, the default, or `x-forwarded-for`), `CURRENT_TIME_STEP` (default `10 seconds`) and `PORT` (default 8080). The process exits at startup, with one JSON `FATAL` line, if any of them is invalid.
 
 ### Redeploy
 
-Never restart in place; delete and run again. The volume, and so the store, model and tuples, survives, and the instances come back on the same image digests:
+Never restart in place; delete and run again. The volume, and so the store, model and tuples, survives, the instances come back on the same image digests and pinned model, and the API on the same URL:
 
 ```bash
 ./scripts/cleanup.sh && ./scripts/deploy.sh
@@ -239,8 +258,9 @@ To compare against the database path, redeploy OpenFGA alone with its check cach
 Removes only `demo-fga-*` resources and exits non-zero if a delete fails:
 
 ```bash
-./scripts/cleanup.sh          # instances only (keeps the volume and images)
-./scripts/cleanup.sh --all    # also the demo-fga-pgdata volume (drops the data) and the <org>/demo-fga-* images
+./scripts/cleanup.sh            # instances only (keeps the volume, images and the API's service group)
+./scripts/cleanup.sh --service  # also the demo-fga-api service group: the public URL is gone for good
+./scripts/cleanup.sh --all      # all of the above, plus the demo-fga-pgdata volume (drops the data) and the <org>/demo-fga-* images
 ```
 
 By hand, keep the output quiet: `delete` prints the instance, environment included.
@@ -249,6 +269,7 @@ By hand, keep the output quiet: `delete` prints the instance, environment includ
 unikraft instances delete demo-fga-api -o quiet
 unikraft instances delete demo-fga-openfga -o quiet
 unikraft instances delete demo-fga-postgres -o quiet
+unikraft services delete demo-fga-api -o quiet
 unikraft volumes delete demo-fga-pgdata -o quiet
 unikraft images delete <org>/demo-fga-api:latest
 ```
@@ -262,6 +283,10 @@ unikraft images delete <org>/demo-fga-api:latest
 | Pin the CLI profile in scripts | [`scripts/env.sh`](scripts/env.sh) | Scripts can't act on another account just because a different profile is active. |
 | Resource-name prefix guard | [`scripts/cleanup.sh`](scripts/cleanup.sh) | Cleanup refuses to touch anything outside `demo-fga-*` on a shared account. |
 | Ship the official OpenFGA binary in a scratch rootfs | [`infrastructure/unikraft/openfga/Dockerfile`](infrastructure/unikraft/openfga/Dockerfile) | Production runs the signed artifact CI tests; no compiler in the build. |
+| Persistent service group for the public API | [`scripts/deploy.sh`](scripts/deploy.sh) | The public URL survives redeploys. |
+| Safe, non-secret defaults baked into the image | [`infrastructure/unikraft/openfga/Kraftfile`](infrastructure/unikraft/openfga/Kraftfile), [`scripts/check-kraftfiles.sh`](scripts/check-kraftfiles.sh) | A manual `unikraft run` fails closed; CI keeps secrets out of images. |
+| Pin the authorization model, write it only when it changed | [`scripts/seed.sh`](scripts/seed.sh), [`api/src/config.ts`](api/src/config.ts) | A model write never goes live by itself. |
+| Trusted condition context from the API | [`api/src/handlers.ts`](api/src/handlers.ts) | `current_time` and the client IP come from the server; rounding the time keeps OpenFGA's check cache useful. |
 | Deploy images by digest, recorded at build time | [`scripts/build.sh`](scripts/build.sh), [`scripts/env.sh`](scripts/env.sh) | A redeploy runs what was verified, not whatever `:latest` points at now. |
 | Two-step build: local OCI archive, then push | [`scripts/build.sh`](scripts/build.sh) | Avoids `failed to package kernel … connection reset by peer`. |
 | One-off migration instance on the private network | [`scripts/deploy.sh`](scripts/deploy.sh) | No database port exposed for migrations; the deploy stops unless it exits 0. |
@@ -315,7 +340,7 @@ In `@openfga/sdk` 0.9.7 the client sends only the tuple key and expectation. Use
 
 ### `ReadChanges` `start_time` must come from the server's clock
 
-The server rejects a `start_time` in the future and compares it with its own timestamps. A client clock that's off (it was through the tunnel) silently returns the wrong window; take the cutoff from a change's `timestamp`.
+The server rejects a `start_time` in the future, and a client clock that's off (it was through the tunnel) silently returns the wrong window. Don't take the cutoff from a change's `timestamp` either: OpenFGA turns `start_time` into a ULID with **its** clock and compares it with the changes' ULIDs, while `timestamp` is the database's `inserted_at`, from **Postgres's** clock. Locally both share a clock; on Unikraft they are separate machines, and a cutoff 1 ms after a change's `timestamp` still returned that change. Take it from OpenFGA (its `Date` response header, whole seconds) or resume from a continuation token.
 
 ### `ListUsers` also fails when a condition is missing context
 
@@ -327,7 +352,19 @@ OpenFGA soft-deletes stores, so a cached store ID keeps returning answers from t
 
 ### The public URL changes on every `unikraft run`
 
-Each run creates a new service with a random FQDN. For a stable name, create the service once with `unikraft services create` and attach instances with `--service`.
+A service created by `-p` (or a `service: services:` block in `--load`) belongs to the instance: deleting the instance deletes it, and the next run gets a new random FQDN. `deploy.sh` creates a persistent service group once (`unikraft services create`) and attaches the API with `service: {name: demo-fga-api}`; the FQDN then survives redeploys, and the domain answers 404 while no instance is attached.
+
+### Postgres never scales to zero while OpenFGA keeps a warm pool
+
+With the production guide's `OPENFGA_DATASTORE_MIN_OPEN_CONNS=5`, Postgres with `scale-to-zero: idle` stayed `running` for 6.5 minutes with no traffic. With no minimum pool and `OPENFGA_DATASTORE_CONN_MAX_IDLE_TIME=30s`, it went to standby after ~90 s; the first uncached check after that took ~82 ms instead of 7–8 ms. Pick one; this demo picks scale-to-zero.
+
+### Reused connections through the tunnel stall or reset
+
+Through `unikraft instances tunnel`, the SDK's kept-alive connections sometimes failed on reuse: a request stalled until the 10 s timeout or got `ECONNRESET`, while OpenFGA's logs showed every request answered in under 1 s. Remote integration runs now open a connection per request ([`tests/integration/helpers.ts`](tests/integration/helpers.ts)): 138/138 in two runs in a row, against 117–132 before.
+
+### `on-failure` doesn't restart an app that exits 0
+
+Measured with throwaway instances: `on-failure` restarted `exit(1)` (with back-off) but left `exit(0)` stopped; `always` restarted both. Long-running servers here use `always`; a one-off job (the migration) uses `never`.
 
 ### Three targets in one `unikraft instances tunnel` fail
 
