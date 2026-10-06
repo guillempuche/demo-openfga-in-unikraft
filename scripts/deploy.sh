@@ -152,12 +152,14 @@ scale-to-zero:
 runtime:
   env:
     OPENFGA_DATASTORE_URI: $(yq_str "$uri")
-    # Pool sizes from the production guide (min open 5-20, min idle 50-75% of
-    # it), with max open at 20 rather than Postgres' max_connections (100): a
-    # 512MiB Postgres can't serve 100 busy backends.
+    # Max open at 20 rather than Postgres' max_connections (100): a 512MiB
+    # Postgres can't serve 100 busy backends. No minimum pool, and idle
+    # connections close after 30 s, so Postgres can scale to zero; the
+    # production guide's warm pool (min open 5-20) keeps it running forever.
+    # Measured: the first uncached check after ~90 s of quiet takes ~80 ms
+    # (Postgres wakes, OpenFGA reconnects) instead of 7-8 ms.
     OPENFGA_DATASTORE_MAX_OPEN_CONNS: "20"
-    OPENFGA_DATASTORE_MIN_OPEN_CONNS: "5"
-    OPENFGA_DATASTORE_MIN_IDLE_CONNS: "3"
+    OPENFGA_DATASTORE_CONN_MAX_IDLE_TIME: 30s
     OPENFGA_DATASTORE_METRICS_ENABLED: "true"
     OPENFGA_METRICS_ENABLE_RPC_HISTOGRAMS: "true"
     # The public API forwards any caller's query: bound how much one query can
