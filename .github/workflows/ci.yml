@@ -15,7 +15,7 @@ jobs:
     env:
       FGA_VERSION: 0.8.1 # keep in sync with versions.env
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install fga CLI
         run: |
           curl -fsSL "https://github.com/openfga/cli/releases/download/v${FGA_VERSION}/fga_${FGA_VERSION}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin fga
@@ -35,7 +35,7 @@ jobs:
       run:
         working-directory: api
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -49,7 +49,7 @@ jobs:
     name: Shell scripts and compose
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash -n scripts/*.sh scripts/env.sh
       - run: ./scripts/check-versions.sh
       - run: ./scripts/check-kraftfiles.sh
@@ -63,7 +63,7 @@ jobs:
       FGA_VERSION: 0.8.1 # keep in sync with versions.env
       GRPCURL_VERSION: 1.9.4
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -95,7 +95,7 @@ jobs:
     name: OpenFGA rootfs builds and runs the official binary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The unikernel rootfs copies the binary out of the pinned official image.
       - run: docker build --platform linux/amd64 --tag demo-fga-openfga-rootfs infrastructure/unikraft/openfga
       - name: Check the binary's version
@@ -107,7 +107,7 @@ jobs:
     name: API rootfs builds and starts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The same Dockerfile the Kraftfile uses for the unikernel rootfs.
       - run: docker build --platform linux/amd64 --tag demo-fga-api-rootfs api
       # Start the rootfs's Node on the bundle, as the unikernel does, with no
