@@ -4,6 +4,9 @@
   "extends": [
     "config:recommended"
   ],
+  "ignorePresets": [
+    ":semanticPrefixFixDepsChoreOthers"
+  ],
   "ignorePaths": [
     "**/node_modules/**",
     "docs/repos/**"
@@ -92,6 +95,15 @@
         "infrastructure/**"
       ],
       "semanticCommitScope": "infra"
+    },
+    {
+      "description": "Packages pinned in both api/ and tests/integration/: one PR spans both, so no scope",
+      "matchPackageNames": [
+        "typescript",
+        "@types/node",
+        "@openfga/sdk"
+      ],
+      "semanticCommitScope": ""
     },
     {
       "matchManagers": [
