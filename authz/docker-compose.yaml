@@ -97,7 +97,7 @@ services:
       - demo_authz_network
 
   caddy:
-    image: caddy:2.8-alpine
+    image: caddy:2.10-alpine
     depends_on:
       openfga:
         condition: service_healthy
