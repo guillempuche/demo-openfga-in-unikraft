@@ -69,7 +69,7 @@
         "/^infrastructure/unikraft/postgres/Dockerfile$/"
       ],
       "matchStrings": [
-        "ENV PG_VERSION=(?<currentValue>\\d+\\.\\d+)"
+        "ARG PG_VERSION=(?<currentValue>\\d+\\.\\d+)"
       ],
       "datasourceTemplate": "docker",
       "depNameTemplate": "postgres",

@@ -273,8 +273,8 @@ _main() {
                 export LANG=en_US.utf8
         fi
 
-        export PG_MAJOR=16
-        export PG_VERSION=16.4
+        # PG_VERSION is set by the image (ARG PG_VERSION in the Dockerfile).
+        export PG_MAJOR="${PG_VERSION%%.*}"
 
         if [ -z "$PGDATA" ]; then
                 export PGDATA=/var/lib/postgresql/data
