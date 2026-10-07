@@ -133,7 +133,7 @@ unikraft images copy ./openfga.oci.tar unikraft.io/<org>/demo-fga-openfga:latest
 
 After each push, `build.sh` checks that the registry lists the archive's digest and records it in `.cache/image-digests` (gitignored).
 
-The postgres image compiles PostgreSQL 16.4 from source for x86_64; on Apple Silicon that runs under emulation and took 11.5 minutes the first time.
+The postgres image compiles PostgreSQL 16.14 from source for x86_64; on Apple Silicon that runs under emulation and takes 10–15 minutes without a cache. Every input is pinned, so the same files always build the same image: the Alpine and busybox base images by digest (a hash of their exact content), the PostgreSQL source and the scale-to-zero extension by SHA-256 checksum (a tampered or changed download stops the build). The shared libraries PostgreSQL needs at run time are found with `ldd` instead of being listed by name, so Alpine moving or renaming them doesn't break the image, and the build fails if any program or PostgreSQL module would be missing one. `./scripts/check-postgres-image.sh` builds it and starts it with the Kraftfile's command (version, extension, a write and a read, clean shutdown); the "Postgres image" workflow runs it whenever the image changes.
 
 ### Deploy
 

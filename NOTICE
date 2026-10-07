@@ -11,8 +11,11 @@ infrastructure/unikraft/postgres/
   Copied from the Unikraft Cloud examples repository:
   https://github.com/unikraft-cloud/examples/tree/main/postgres
   The upstream repository does not state a license; these files are not
-  covered by this repository's LICENSE. Local change: Kraftfile name and
-  max_wal_size.
+  covered by this repository's LICENSE. Local changes: Kraftfile name and
+  max_wal_size; in the Dockerfile, base images pinned by digest, downloads
+  checked by SHA-256, the extension pinned to a commit, the version set once
+  (ARG PG_VERSION), and the runtime libraries collected with ldd instead of
+  listed by name.
 
 infrastructure/unikraft/postgres/wrapper.sh
   Derived from the docker-library/postgres entrypoint script:
