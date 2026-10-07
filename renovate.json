@@ -74,6 +74,20 @@
       "datasourceTemplate": "docker",
       "depNameTemplate": "postgres",
       "versioningTemplate": "docker"
+    },
+    {
+      "description": "pg_ukc_scaletozero: the commit the Postgres image builds, following its stable branch",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^infrastructure/unikraft/postgres/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "ARG PG_UKC_SCALETOZERO_COMMIT=(?<currentDigest>[0-9a-f]{40})"
+      ],
+      "datasourceTemplate": "git-refs",
+      "depNameTemplate": "pg_ukc_scaletozero",
+      "packageNameTemplate": "https://github.com/unikraft-cloud/pg_ukc_scaletozero",
+      "currentValueTemplate": "stable"
     }
   ],
   "packageRules": [
@@ -97,6 +111,15 @@
       ],
       "semanticCommitType": "cicd",
       "semanticCommitScope": ""
+    },
+    {
+      "description": "The Postgres image checks every download's SHA-256, so a version or extension bump needs its checksum too",
+      "matchFileNames": [
+        "infrastructure/unikraft/postgres/**"
+      ],
+      "prBodyNotes": [
+        "The Postgres image pins its downloads by SHA-256. For a `PG_VERSION` bump, set `PG_SHA256` to the checksum published at `https://ftp.postgresql.org/pub/source/v<version>/postgresql-<version>.tar.bz2.sha256`; for a `PG_UKC_SCALETOZERO_COMMIT` bump, set `PG_UKC_SCALETOZERO_SHA256` to `curl -fsSL https://github.com/unikraft-cloud/pg_ukc_scaletozero/archive/<commit>.tar.gz | sha256sum`. Until then the build stops at the checksum check. Then run `./scripts/check-postgres-image.sh` (the \"Postgres image\" workflow runs it on this PR)."
+      ]
     },
     {
       "description": "Packages pinned in both api/ and tests/integration/: one PR spans both, so no scope",
