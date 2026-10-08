@@ -474,6 +474,7 @@ CI runs these, plus `shellcheck` on the scripts, the version check, a Compose co
 
 - OpenFGA server and fga CLI bumps arrive as one "OpenFGA" PR covering `versions.env`, the unikernel Dockerfile, both compose files, CI and `flake.nix`. The PR notes the manual steps: `git subtree pull` for `docs/repos/` and the `flake.nix` hashes. Until those are done, `check-versions.sh` fails it.
 - npm packages (Effect grouped), Docker base images, the PostgreSQL source version, grpcurl and GitHub Actions get their own PRs.
+- GitHub Actions are pinned to a commit SHA, with the release in a comment (`actions/checkout@<sha> # v7.0.1`): a tag such as `v7` can be moved to point at other code, a commit can't. Renovate updates the SHA and the comment together.
 - Major PostgreSQL and Node.js upgrades are never proposed: they need a data migration or engine and CI changes.
 
 ## Reference

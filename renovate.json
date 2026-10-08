@@ -2,7 +2,8 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "Dependency updates. OpenFGA server and fga CLI pins move together in one PR (scripts/check-versions.sh fails otherwise).",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    "helpers:pinGitHubActionDigestsToSemver"
   ],
   "ignorePresets": [
     ":semanticPrefixFixDepsChoreOthers"
