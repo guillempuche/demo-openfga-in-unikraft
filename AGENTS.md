@@ -12,7 +12,7 @@ Example of OpenFGA (ReBAC, fine-grained authorization) running on Unikraft Cloud
 | --- | --- | --- |
 | OpenFGA | v1.21.0, `http://localhost:8080` (via Caddy), key `dev-key-1` | v1.21.0, `demo-fga-openfga.internal:8080`, no public port; tunnel: `localhost:18080` |
 | Playground | optional `--profile playground`: `http://localhost:8082/playground`, its API `localhost:8090` without auth | disabled |
-| PostgreSQL | 17.2, host port 5435 | 16.4, `demo-fga-postgres.internal:5432`, volume `demo-fga-pgdata` (512MiB), scales to zero when idle (stateful) |
+| PostgreSQL | 17.7, host port 5435 | 16.14, `demo-fga-postgres.internal:5432`, volume `demo-fga-pgdata` (512MiB), scales to zero when idle (stateful) |
 | API | `cd api && FGA_KEY=dev-key-1 FGA_API_URL=http://localhost:8080 PORT=3001 npm start` | `demo-fga-api`, public HTTPS 443→8080 through the persistent service group `demo-fga-api` (stable URL): `/health`, `/check`, `/batch-check`, `/list-objects`, `/bench`, `/openapi.json`, `/docs` |
 | Config | `authz/.env` (from `authz/.env.example`) | root `.env` (from `.env.example`): `UNIKRAFT_PROFILE`, `FGA_KEY`, `POSTGRES_PASSWORD`, optional `OPENFGA_DATASTORE_URI` |
 | Store | create with `fga store create` (no fixed ID) | `demo-fga`, created by `scripts/seed.sh`; the API finds it by name and pins the model id `seed.sh` records in `.cache/fga-model-id` (`FGA_MODEL_ID`) |
@@ -68,6 +68,7 @@ bash -n scripts/*.sh scripts/env.sh
 ./scripts/check-versions.sh
 docker compose -f tests/integration/docker-compose.yaml up -d --wait && (cd tests/integration && npm ci)
 python3 scripts/check-api-coverage.py              # integration suite + every RPC tested and seen in server metrics
+./scripts/check-postgres-image.sh                  # only when infrastructure/unikraft/postgres changes: build + start + query (10-15 min emulated)
 ```
 
 Integration tests are named `[rpc:<Name>] ...` (the API gate counts them) and use a fresh store per file (`freshStore` in `tests/integration/helpers.ts`); never test against the seeded `demo-fga` store. They need `fga` and `grpcurl` on PATH.
@@ -100,11 +101,13 @@ Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. 
 - **Ask before data loss.** `cleanup.sh --volume` or `--all` deletes the Postgres volume (store, model and tuples); `--service` or `--all` deletes the API's service group, and with it the public URL.
 - **No secrets in Kraftfiles.** Kraftfile `env` is baked into the image config, readable with registry access; `scripts/check-kraftfiles.sh` enforces it. Secrets go through `deploy.sh`.
 - **Keep `FGA_MODEL_ID` out of the scripts' environment.** The fga CLI reads it too; `seed.sh`, `test-remote.sh` and `check-e2e.sh` unset it. The API gets it only through the deploy spec.
+- **Postgres image pins.** `infrastructure/unikraft/postgres/Dockerfile` pins base images by digest and checks `PG_SHA256` / `PG_UKC_SCALETOZERO_SHA256`; bump each checksum with its version or commit (never remove the check). Don't list runtime libraries by name: the `runtime` stage collects them with `ldd` and fails the build if one is missing.
 - **Keep the two-step build.** A direct `unikraft build --output <org>/<image>` fails with `failed to package kernel … connection reset by peer` on slow or VPN links.
 - **Pin GitHub Actions by commit.** Every `uses:` names a full 40-character commit SHA with its release in a comment (`actions/checkout@<sha> # v7.0.1`), never a movable tag like `@v7`. Renovate (`helpers:pinGitHubActionDigestsToSemver`) keeps both up to date; add new steps in the same form.
 
 ## Conventions
 
+- Audience: comments, docs and names are read by developers new to ReBAC (relationship-based access control), OpenFGA and unikernels, by search engines and by AI agents. Plain words first, then the exact term, defined on first use; explain why, not what (see `.agents/skills/write-comments/SKILL.md`); descriptive headings that use the terms people search for.
 - Commit messages: `type(scope): subject` in the imperative, with a bulleted past-tense body; types `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `cicd`, `ai`; scopes `authz`, `api`, `infra`, `nix`. Full rules: [.agents/skills/git-commit-messages/SKILL.md](.agents/skills/git-commit-messages/SKILL.md).
 - Shell scripts: `#!/usr/bin/env bash`, source `scripts/env.sh`, pass `shellcheck -x -S warning`.
 - The API uses Effect 4 (`effect`, `@effect/platform-node`) and `@openfga/sdk`, pinned to exact versions; `npm run build` bundles them with esbuild into `api/dist/server.mjs`, the only file the unikernel ships. Import `@effect/platform-node/NodeHttpServer` and `/NodeRuntime` directly: the package index re-exports a Redis client, which `npm start` (unbundled) would load; the bundle drops it either way. Keep TypeScript to erasable syntax (`erasableSyntaxOnly`) so `npm start` runs `src/main.ts` without a build. Endpoints, payloads and errors are declared once in `api/src/api.ts`; request-schema errors go through `HttpApiMiddleware.layerSchemaErrorTransform` (`api/src/main.ts`), not a router middleware. Condition context (`current_time`, `user_ip`) is set by the API, never by callers (`api/src/handlers.ts`). `server.test.ts` tests the bundle as a black box against a stub OpenFGA (`npm test`); `integration.test.ts` runs it against the integration compose OpenFGA (`npm run test:integration`).

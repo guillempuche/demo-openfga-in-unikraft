@@ -4,7 +4,8 @@
 # seed.sh, then `deploy.sh api`, so the API pins the seeded model from the start.)
 #
 # Everything runs on Unikraft Cloud, on the account's private network:
-# - demo-fga-postgres: private, persistent volume demo-fga-pgdata, scale-to-zero off.
+# - demo-fga-postgres: private, persistent volume demo-fga-pgdata, scales to zero
+#   when idle (stateful: resumes with its memory intact).
 # - demo-fga-migrate: one-off `openfga migrate` against postgres, deleted when
 #   done; the deploy stops unless it exits 0.
 # - demo-fga-openfga: private (no published ports), scale-to-zero off,

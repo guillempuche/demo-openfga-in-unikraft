@@ -1,0 +1,33 @@
+name: Postgres image
+
+# Builds and tests the PostgreSQL image of the Unikraft deployment (the
+# database OpenFGA stores its data in). The image compiles PostgreSQL from
+# source, so this runs only when the image or its check changes; that includes
+# Renovate's updates of the Alpine base image, PostgreSQL and the extension.
+on:
+  push:
+    branches: [main]
+    paths:
+      - infrastructure/unikraft/postgres/**
+      - scripts/check-postgres-image.sh
+      - .github/workflows/postgres-image.yml
+  pull_request:
+    paths:
+      - infrastructure/unikraft/postgres/**
+      - scripts/check-postgres-image.sh
+      - .github/workflows/postgres-image.yml
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-image:
+    name: Postgres rootfs builds, starts and serves queries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Builds the image (verifying every pinned download and every shared
+      # library), then starts it in Docker with the unikernel's command (the
+      # Kraftfile's cmd) and runs a few queries.
+      - run: ./scripts/check-postgres-image.sh
