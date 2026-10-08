@@ -77,7 +77,7 @@ check "HTTPS health" "$(openfga "$tls_dir/ca.crt" /healthz | jq -r .status)" "SE
 check "HTTPS with an unknown CA" "$(openfga "$other_dir/ca.crt" /healthz 2>&1 | grep -o 'SSL certificate problem' | head -1)" "SSL certificate problem"
 check "plain HTTP (status)" "$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$openfga_port/healthz")" "400"
 # gRPC is HTTP/2 over TLS: the handshake must verify and agree on h2 (ALPN).
-grpc_handshake="$(openssl s_client -connect "127.0.0.1:$grpc_port" -servername demo-fga-openfga.internal \
+grpc_handshake="$(openssl s_client -connect "127.0.0.1:$grpc_port" -servername demo-fga-openfga.internal -verify_hostname demo-fga-openfga.internal \
   -CAfile "$tls_dir/ca.crt" -verify_return_error -alpn h2 </dev/null 2>/dev/null || true)"
 check "gRPC TLS (verify)" "$(grep -o 'Verify return code: 0 (ok)' <<<"$grpc_handshake" | head -1)" "Verify return code: 0 (ok)"
 check "gRPC TLS (protocol)" "$(grep -o 'ALPN protocol: h2' <<<"$grpc_handshake" | head -1)" "ALPN protocol: h2"
