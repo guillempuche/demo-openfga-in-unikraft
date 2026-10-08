@@ -76,7 +76,7 @@
       "versioningTemplate": "docker"
     },
     {
-      "description": "pg_ukc_scaletozero: the commit the Postgres image builds, following its stable branch",
+      "description": "pg_ukc_scaletozero (Unikraft's scale-to-zero PostgreSQL extension): the commit the Postgres image builds, updated to the latest commit on its stable branch",
       "customType": "regex",
       "managerFilePatterns": [
         "/^infrastructure/unikraft/postgres/Dockerfile$/"
