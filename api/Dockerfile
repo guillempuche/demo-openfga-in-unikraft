@@ -1,6 +1,10 @@
+# Both stages use the same Node.js 24 image, pinned by digest (a hash of its
+# exact content) so every build ships the same Node.js; Renovate proposes
+# updates when the 24-alpine tag moves.
+#
 # Bundle the API into one ES module. The output is plain JavaScript, so this
 # stage runs on the build machine's own architecture.
-FROM --platform=$BUILDPLATFORM node:24-alpine AS build
+FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -10,7 +14,7 @@ RUN npm run build
 
 # Same shape as unikraft-cloud/examples httpserver-node26: copy only the Node
 # binary, its musl loader and C++ runtime into a scratch rootfs.
-FROM --platform=linux/amd64 node:24-alpine AS node
+FROM --platform=linux/amd64 node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS node
 
 FROM scratch
 
