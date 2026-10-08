@@ -12,6 +12,12 @@
 #   preshared-key auth. Reachable only as demo-fga-openfga.internal:8080.
 # - demo-fga-api: public HTTPS, talks to OpenFGA over .internal.
 #
+# The private hops use TLS unless INTERNAL_TLS=off (see env.sh): the API
+# reaches OpenFGA over HTTPS and OpenFGA reaches PostgreSQL with verify-full,
+# each checking the server's certificate against the CA. The certificates
+# (scripts/tls.sh, or your own) travel like the other secrets below, as PEM
+# text in the instances' environment; the images write them to files.
+#
 # `unikraft run -e` only accepts KEY=VALUE on the command line, which would put
 # secrets in the process list. Instead each instance is described in a 0600
 # temp YAML passed with --load (same schema as `unikraft run --save`).
@@ -32,15 +38,52 @@ esac
 tmp="$(umask 077; mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
+# Check the certificate files this deploy hands over before creating anything.
+if tls_on; then
+  certificates=()
+  if [[ "$target" == postgres || "$target" == backend || "$target" == all ]]; then
+    certificates+=("$POSTGRES_TLS_CERT_FILE" "$POSTGRES_TLS_KEY_FILE" "$POSTGRES_NAME.internal")
+  fi
+  if [[ "$target" == openfga || "$target" == backend || "$target" == all ]]; then
+    certificates+=("$OPENFGA_TLS_CERT_FILE" "$OPENFGA_TLS_KEY_FILE" "$OPENFGA_NAME.internal")
+  fi
+  check_certificates "${certificates[@]}"
+fi
+
+# Spec lines giving an instance TLS material as PEM text, quoted for YAML:
+# tls_env NAME=FILE... Nothing when INTERNAL_TLS=off.
+tls_env() {
+  tls_on || return 0
+  local pair
+  for pair in "$@"; do
+    printf '    %s: %s\n' "${pair%%=*}" "$(yq_str "$(<"${pair#*=}")")"
+  done
+}
+
+# The CA OpenFGA (and its migration) trusts for the datastore: ours for the
+# private postgres instance, or OPENFGA_DATASTORE_CA_FILE for an external
+# PostgreSQL with a private CA (its URI then names sslrootcert=/tmp/tls/ca.crt).
+datastore_ca_env() {
+  if [[ -n "${OPENFGA_DATASTORE_CA_FILE:-}" ]]; then
+    printf '    TLS_CA_PEM: %s\n' "$(yq_str "$(<"$OPENFGA_DATASTORE_CA_FILE")")"
+  elif [[ -z "${OPENFGA_DATASTORE_URI:-}" ]]; then
+    tls_env TLS_CA_PEM="$TLS_CA_FILE"
+  fi
+}
+
 # OpenFGA's datastore: the private postgres instance unless overridden (e.g.
-# with an external Postgres URL). Plain TCP is fine here: the connection never
-# leaves the account's private network.
+# with an external PostgreSQL URL, whose TLS settings are then its own). With
+# TLS, verify-full: the connection is encrypted, and PostgreSQL's certificate
+# must be signed by the CA (written to /tmp/tls/ca.crt by OpenFGA's
+# entrypoint.sh) and valid for the instance's private name.
 datastore_uri() {
   if [[ -n "${OPENFGA_DATASTORE_URI:-}" ]]; then
     printf '%s' "$OPENFGA_DATASTORE_URI"
   else
     require POSTGRES_PASSWORD
-    printf 'postgres://openfga:%s@%s.internal:5432/openfga?sslmode=disable' "$POSTGRES_PASSWORD" "$POSTGRES_NAME"
+    local tls=sslmode=disable
+    if tls_on; then tls="sslmode=verify-full&sslrootcert=/tmp/tls/ca.crt"; fi
+    printf 'postgres://openfga:%s@%s.internal:5432/openfga?%s' "$POSTGRES_PASSWORD" "$POSTGRES_NAME" "$tls"
   fi
 }
 
@@ -89,6 +132,7 @@ runtime:
     POSTGRES_DB: openfga
     POSTGRES_PASSWORD: $(yq_str "$POSTGRES_PASSWORD")
     PGDATA: /volume/postgres
+$(tls_env TLS_CERT_PEM="$POSTGRES_TLS_CERT_FILE" TLS_KEY_PEM="$POSTGRES_TLS_KEY_FILE")
 EOF
   run_from_yaml "$POSTGRES_NAME"
   wait_running "$POSTGRES_NAME"
@@ -111,9 +155,10 @@ resources:
 restart:
   policy: never
 runtime:
-  args: [/usr/bin/openfga, migrate]
+  args: [/usr/local/bin/entrypoint.sh, migrate]
   env:
     OPENFGA_DATASTORE_URI: $(yq_str "$uri")
+$(datastore_ca_env)
 EOF
   migrated=false
   for attempt in 1 2 3 4 5; do
@@ -172,6 +217,8 @@ runtime:
     OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_USERS: "10"
     OPENFGA_AUTHN_PRESHARED_KEYS: $(yq_str "$FGA_KEY")
     OPENFGA_CHECK_QUERY_CACHE_ENABLED: $(yq_str "${OPENFGA_CHECK_QUERY_CACHE_ENABLED:-true}")
+$(tls_env TLS_CERT_PEM="$OPENFGA_TLS_CERT_FILE" TLS_KEY_PEM="$OPENFGA_TLS_KEY_FILE")
+$(datastore_ca_env)
 EOF
   run_from_yaml "$OPENFGA_NAME"
   wait_running "$OPENFGA_NAME"
@@ -213,7 +260,8 @@ service:
 runtime:
   env:
     PORT: "8080"
-    FGA_API_URL: http://$OPENFGA_NAME.internal:8080
+    FGA_API_URL: $(tls_on && echo https || echo http)://$OPENFGA_NAME.internal:8080
+$(tls_env TLS_CA_PEM="$TLS_CA_FILE")
     FGA_STORE_NAME: $(yq_str "$FGA_STORE_NAME")
     FGA_KEY: $(yq_str "$FGA_KEY")
     # Unikraft's proxy replaces X-Forwarded-For with the caller's address
