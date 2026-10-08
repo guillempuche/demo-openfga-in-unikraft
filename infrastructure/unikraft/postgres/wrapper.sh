@@ -273,7 +273,8 @@ _main() {
                 export LANG=en_US.utf8
         fi
 
-        # PG_VERSION is set by the image (ARG PG_VERSION in the Dockerfile).
+        # PG_VERSION comes from the image (set once in the Dockerfile). The
+        # major version is the part before the first dot: 16.14 -> 16.
         export PG_MAJOR="${PG_VERSION%%.*}"
 
         if [ -z "$PGDATA" ]; then

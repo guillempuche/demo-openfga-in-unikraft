@@ -9,8 +9,9 @@
 # Supply-chain safety: every input is pinned. Base images are referenced by
 # digest (a hash of their exact content) and each download is checked against
 # its SHA-256 checksum, so this file always builds the same image and a
-# tampered or changed download stops the build. Renovate proposes updates; a
-# new PG_VERSION or extension commit also needs its checksum below.
+# tampered or changed download stops the build. Renovate, the dependency-update
+# bot (renovate.json), proposes updates; a new PG_VERSION or extension commit
+# also needs its checksum below.
 
 # PostgreSQL version, set only here (wrapper.sh reads it from the image), and
 # the SHA-256 of its source tarball as published by the PostgreSQL project:
@@ -31,6 +32,8 @@ FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6
 ##
 FROM base AS pg-build
 
+# The ARGs at the top of the file are visible inside a stage only once the
+# stage re-declares them (without a value, so it keeps the one at the top).
 ARG PG_VERSION
 ARG PG_SHA256
 ARG PG_UKC_SCALETOZERO_COMMIT
@@ -70,6 +73,9 @@ ADD https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION
 ADD https://github.com/unikraft-cloud/pg_ukc_scaletozero/archive/${PG_UKC_SCALETOZERO_COMMIT}.tar.gz /tmp/pg_ukc_scaletozero.tar.gz
 COPY allow-root.patch /tmp/
 
+# sha256sum -c stops the build if a file's checksum differs from the pinned
+# one. --strip-components=1 drops each archive's top folder (such as
+# postgresql-16.14/), so the sources land in a fixed directory.
 RUN set -eu; \
     echo "${PG_SHA256}  /tmp/postgresql.tar.bz2" | sha256sum -c -; \
     echo "${PG_UKC_SCALETOZERO_SHA256}  /tmp/pg_ukc_scaletozero.tar.gz" | sha256sum -c -; \
@@ -79,9 +85,12 @@ RUN set -eu; \
     rm /tmp/postgresql.tar.bz2 /tmp/pg_ukc_scaletozero.tar.gz
 
 # allow-root.patch lets PostgreSQL run as root, which is how the unikernel
-# runs it (PostgreSQL refuses to otherwise).
-# The compiler flags keep the binaries small. Everything installs into
-# /usr/src/postgresql/dist, which the later stages copy from.
+# runs it (PostgreSQL refuses to otherwise). The compiler flags keep the
+# binaries small. world-bin is everything (server, client tools, contrib
+# modules) except the documentation; it installs into /usr/src/postgresql/dist,
+# which the later stages copy from. The plain `make install` also installs
+# PostgreSQL in this stage's /usr/local, where the extension build below finds
+# it.
 RUN set -eu; \
     cd /usr/src/postgresql; \
     git apply /tmp/allow-root.patch; \
@@ -108,6 +117,9 @@ RUN set -eu; \
     make install-world-bin DESTDIR=/usr/src/postgresql/dist; \
     make install
 
+# The extension's Makefile uses PGXS, PostgreSQL's build system for extensions,
+# which finds PostgreSQL through pg_config (in /usr/local/bin since the step
+# above).
 RUN set -eu; \
     cd /usr/src/pg_ukc_scaletozero; \
     export CFLAGS="-s -Os -Wl,--strip-all"; \
@@ -151,37 +163,50 @@ FROM base-deps AS runtime
 
 COPY --from=pg-build /usr/src/postgresql/dist/ /rootfs/
 
-# Add bash (wrapper.sh needs it) and the data files PostgreSQL reads (ICU's
-# Unicode data, time zones). Then collect the libraries of every program and
-# module in /rootfs. ldd prints each one as an absolute path; PostgreSQL's own
-# (libpq and others) are found inside /rootfs and need no copy. sort reads all
-# of ldd's output before the copying starts writing into /rootfs.
+# Add the data files PostgreSQL reads (ICU's Unicode data, time zones) and bash,
+# which wrapper.sh needs (added first, so its libraries are collected too). Then
+# copy in every library that a program or module in /rootfs uses.
 RUN set -eu; \
     mkdir -p /rootfs/bin /rootfs/usr/share; \
     cp "$(command -v bash)" /rootfs/bin/bash; \
     cp -a /usr/share/icu /usr/share/zoneinfo /rootfs/usr/share/; \
+    # Programs (files the owner can execute) and libraries or modules (*.so*).
     find /rootfs -type f \( -perm -u+x -o -name '*.so*' \) \
+        # ldd lists a file's libraries. LD_LIBRARY_PATH lets it find
+        # PostgreSQL's own (libpq and others) in /rootfs. ldd fails on a file
+        # that isn't a compiled program, such as a script: skip it.
         | while read -r f; do LD_LIBRARY_PATH=/rootfs/usr/local/lib ldd "$f" 2>/dev/null || true; done \
+        # Keep only the absolute paths, the library files: the line
+        # "libz.so.1 => /lib/libz.so.1 (0x...)" gives /lib/libz.so.1.
         | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }' \
+        # Libraries already in /rootfs (PostgreSQL's own) need no copy. sort
+        # outputs nothing until find has finished, so the copying below never
+        # writes into /rootfs while find is still reading it.
         | grep -v '^/rootfs/' | sort -u \
+        # Copy each to the same path inside /rootfs (${lib%/*} is its directory).
+        # Most are symlinks to a file named with the full version; cp -L copies
+        # that file under the symlink's name.
         | while read -r lib; do mkdir -p "/rootfs${lib%/*}"; cp -L "$lib" "/rootfs$lib"; done
 
-# Fail the build, not the deployment, if a library file is still missing: for
-# every program and every module PostgreSQL loads at run time, resolve its
-# libraries inside /rootfs with the dynamic loader of musl, Alpine's C library
-# (the same loader ldd runs). Only missing files count: a module's references
-# to PostgreSQL's own functions (palloc, errmsg, ...) are resolved by the
-# running server when it loads the module, so they show up here as "symbol not
-# found" by design. Then start PostgreSQL there once.
+# Fail the build, not the deployment, if a library file is still missing: every
+# program and module must find all its libraries inside /rootfs, and PostgreSQL
+# must start there.
 RUN set -eu; \
+    # Compiled programs and libraries are ELF files, which start with the byte
+    # 0x7F and the letters "ELF"; skip anything else, such as scripts.
+    is_elf() { [ "$(head -c 4 "$1" | tail -c 3)" = ELF ]; }; \
+    # Print the libraries of a file that the dynamic loader of musl (Alpine's C
+    # library; ldd runs the same loader) can't find inside /rootfs. Only missing
+    # files count: a module's calls into PostgreSQL (palloc, errmsg, ...) are
+    # resolved when the server loads it, so "symbol not found" here is expected.
+    missing_libraries() { chroot /rootfs /lib/ld-musl-x86_64.so.1 --list "$1" 2>&1 | grep 'Error loading shared library'; }; \
     unresolved=0; \
-    for f in $(find /rootfs -type f \( -perm -u+x -o -name '*.so*' \)); do \
-        [ "$(head -c 4 "$f" | tail -c 3)" = ELF ] || continue; \
-        if chroot /rootfs /lib/ld-musl-x86_64.so.1 --list "${f#/rootfs}" 2>&1 | grep -q 'Error loading shared library'; then \
-            chroot /rootfs /lib/ld-musl-x86_64.so.1 --list "${f#/rootfs}" 2>&1 | grep 'Error loading shared library' >&2; \
-            unresolved=1; \
-        fi; \
+    for file in $(find /rootfs -type f \( -perm -u+x -o -name '*.so*' \)); do \
+        is_elf "$file" || continue; \
+        # Inside the chroot, /rootfs/<path> is /<path>.
+        if missing_libraries "${file#/rootfs}" >&2; then unresolved=1; fi; \
     done; \
+    # Fail only now, so the log lists every missing library, not just the first.
     [ "$unresolved" = 0 ]; \
     chroot /rootfs /usr/local/bin/postgres --version
 
@@ -191,7 +216,9 @@ RUN set -eu; \
 ##
 FROM busybox:1.38.0@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
 
-# wrapper.sh reads the PostgreSQL version from here.
+# wrapper.sh reads the PostgreSQL version from the environment. ARG brings in
+# the value from the top of the file (see stage 1); ENV keeps it in the image,
+# since an ARG exists only during the build.
 ARG PG_VERSION
 ENV PG_VERSION=${PG_VERSION}
 
