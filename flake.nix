@@ -48,6 +48,7 @@
             pkgs.shellcheck # CI lints scripts/ with it
             pkgs.grpcurl # integration suite: gRPC-only UpdateStore
             pkgs.openssl # scripts/tls.sh and check-tls.sh (macOS ships LibreSSL)
+            pkgs.postgresql_16 # psql for check-tls.sh (same major version as the deployment)
             pkgs.starship # shell beautifier
             pkgs.zsh # ensure zsh is available for nix develop -c zsh
           ];
