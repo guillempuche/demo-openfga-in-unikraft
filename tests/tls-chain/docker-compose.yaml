@@ -13,7 +13,25 @@
 name: demo-fga-tls-chain
 
 services:
+  # Copies PostgreSQL's certificate into a volume, the key owned by postgres
+  # (uid 70) and readable by it alone (0600), as in tests/integration.
+  tls-files:
+    image: busybox:1.38.0-musl
+    volumes:
+      - ${TLS_DIR:?run scripts/check-tls-chain.sh}:/src:ro
+      - tls:/tls
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        install -m 644 /src/postgres.crt /tls/
+        install -m 600 -o 70 /src/postgres.key /tls/
+
   postgres:
+    depends_on:
+      tls-files:
+        condition: service_completed_successfully
     image: postgres:16-alpine
     networks:
       default:
@@ -22,31 +40,20 @@ services:
       - POSTGRES_USER=openfga
       - POSTGRES_PASSWORD=chain
       - POSTGRES_DB=openfga
-    # PostgreSQL only reads a private key owned by its user (postgres) with
-    # mode 0600, which a file mounted from the host isn't: copy it first, as
-    # root, then start the image's usual entrypoint.
-    entrypoint:
-      - sh
-      - -c
-      - |
-        install -m 600 -o postgres /tls/postgres.key /var/lib/postgresql/server.key
-        install -m 644 /tls/postgres.crt /var/lib/postgresql/server.crt
-        exec docker-entrypoint.sh "$$@"
-      - --
     command:
       - postgres
       - -c
       - ssl=on
       - -c
-      - ssl_cert_file=/var/lib/postgresql/server.crt
+      - ssl_cert_file=/tls/postgres.crt
       - -c
-      - ssl_key_file=/var/lib/postgresql/server.key
+      - ssl_key_file=/tls/postgres.key
       - -c
       - ssl_min_protocol_version=TLSv1.3
       - -c
       - hba_file=/etc/postgresql/pg_hba_tls.conf
     volumes:
-      - ${TLS_DIR:?run scripts/check-tls-chain.sh}:/tls:ro
+      - tls:/tls:ro
       - ../../infrastructure/unikraft/postgres/fs/etc/postgresql/pg_hba_tls.conf:/etc/postgresql/pg_hba_tls.conf:ro
     tmpfs:
       - /var/lib/postgresql/data
@@ -105,3 +112,6 @@ services:
       - TLS_CA_PEM=${TLS_CA_PEM}
     ports:
       - "127.0.0.1:38088:8080"
+
+volumes:
+  tls:
