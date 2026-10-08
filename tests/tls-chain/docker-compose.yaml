@@ -1,0 +1,107 @@
+# A rehearsal of the Unikraft deployment's private network, with TLS on both
+# hops: API -> OpenFGA -> PostgreSQL. Started by scripts/check-tls-chain.sh,
+# which creates throwaway certificates and passes them in.
+#
+# - api and openfga run the images that ship (built from api/ and
+#   infrastructure/unikraft/openfga), with the environment scripts/deploy.sh
+#   gives the instances, certificates included (as PEM text).
+# - postgres is the official image with the same TLS settings as the unikernel
+#   image (TLS 1.3, pg_hba_tls.conf); scripts/check-postgres-image.sh checks
+#   that image itself.
+# - The network aliases are the instances' private names, so certificates and
+#   URLs are the ones production uses.
+name: demo-fga-tls-chain
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    networks:
+      default:
+        aliases: [demo-fga-postgres.internal]
+    environment:
+      - POSTGRES_USER=openfga
+      - POSTGRES_PASSWORD=chain
+      - POSTGRES_DB=openfga
+    # PostgreSQL only reads a private key owned by its user (postgres) with
+    # mode 0600, which a file mounted from the host isn't: copy it first, as
+    # root, then start the image's usual entrypoint.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        install -m 600 -o postgres /tls/postgres.key /var/lib/postgresql/server.key
+        install -m 644 /tls/postgres.crt /var/lib/postgresql/server.crt
+        exec docker-entrypoint.sh "$$@"
+      - --
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/postgresql/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql/server.key
+      - -c
+      - ssl_min_protocol_version=TLSv1.3
+      - -c
+      - hba_file=/etc/postgresql/pg_hba_tls.conf
+    volumes:
+      - ${TLS_DIR:?run scripts/check-tls-chain.sh}:/tls:ro
+      - ../../infrastructure/unikraft/postgres/fs/etc/postgresql/pg_hba_tls.conf:/etc/postgresql/pg_hba_tls.conf:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openfga"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    build: ../../infrastructure/unikraft/openfga
+    platform: linux/amd64
+    command: ["/usr/local/bin/entrypoint.sh", "migrate"]
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      - OPENFGA_DATASTORE_URI=postgres://openfga:chain@demo-fga-postgres.internal:5432/openfga?sslmode=verify-full&sslrootcert=/tmp/tls/ca.crt
+      - TLS_CA_PEM=${TLS_CA_PEM:?run scripts/check-tls-chain.sh}
+
+  openfga:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    build: ../../infrastructure/unikraft/openfga
+    platform: linux/amd64
+    command: ["/usr/local/bin/entrypoint.sh", "run"]
+    networks:
+      default:
+        aliases: [demo-fga-openfga.internal]
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      - OPENFGA_DATASTORE_URI=postgres://openfga:chain@demo-fga-postgres.internal:5432/openfga?sslmode=verify-full&sslrootcert=/tmp/tls/ca.crt
+      - OPENFGA_AUTHN_METHOD=preshared
+      - OPENFGA_AUTHN_PRESHARED_KEYS=chain-key
+      - OPENFGA_PLAYGROUND_ENABLED=false
+      - OPENFGA_HTTP_ADDR=0.0.0.0:8080
+      - OPENFGA_LOG_FORMAT=json
+      - TLS_CERT_PEM=${OPENFGA_TLS_CERT_PEM:?run scripts/check-tls-chain.sh}
+      - TLS_KEY_PEM=${OPENFGA_TLS_KEY_PEM:?run scripts/check-tls-chain.sh}
+      - TLS_CA_PEM=${TLS_CA_PEM}
+    ports:
+      - "127.0.0.1:38080:8080" # HTTP API over TLS
+      - "127.0.0.1:38081:8081" # gRPC over TLS
+
+  api:
+    depends_on:
+      - openfga
+    build: ../../api
+    platform: linux/amd64
+    command: ["/usr/bin/node", "/usr/src/server.mjs"]
+    environment:
+      - FGA_API_URL=https://demo-fga-openfga.internal:8080
+      - FGA_KEY=chain-key
+      - TLS_CA_PEM=${TLS_CA_PEM}
+    ports:
+      - "127.0.0.1:38088:8080"
