@@ -11,7 +11,9 @@ rootfs:
   source: ./Dockerfile
   format: erofs
 
-cmd: ["/usr/bin/openfga", "run"]
+# entrypoint.sh writes the TLS certificates deploy.sh passes to files, then
+# runs `openfga run`.
+cmd: ["/usr/local/bin/entrypoint.sh", "run"]
 
 # Safe defaults baked into the image, so even a manual `unikraft run` without
 # scripts/deploy.sh can't start an open server: no datastore URI means an
