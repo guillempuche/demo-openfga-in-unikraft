@@ -101,6 +101,7 @@ Redeploy means `cleanup.sh` then `deploy.sh`; never restart instances in place. 
 - **No secrets in Kraftfiles.** Kraftfile `env` is baked into the image config, readable with registry access; `scripts/check-kraftfiles.sh` enforces it. Secrets go through `deploy.sh`.
 - **Keep `FGA_MODEL_ID` out of the scripts' environment.** The fga CLI reads it too; `seed.sh`, `test-remote.sh` and `check-e2e.sh` unset it. The API gets it only through the deploy spec.
 - **Keep the two-step build.** A direct `unikraft build --output <org>/<image>` fails with `failed to package kernel … connection reset by peer` on slow or VPN links.
+- **Pin GitHub Actions by commit.** Every `uses:` names a full 40-character commit SHA with its release in a comment (`actions/checkout@<sha> # v7.0.1`), never a movable tag like `@v7`. Renovate (`helpers:pinGitHubActionDigestsToSemver`) keeps both up to date; add new steps in the same form.
 
 ## Conventions
 
