@@ -9,14 +9,22 @@
 // asserted.
 //
 // Target: FGA_API_URL / FGA_API_TOKEN (default: the local compose stack in this
-// folder). Through the Unikraft tunnel: FGA_API_URL=http://localhost:18080.
+// folder, over TLS). Through the Unikraft tunnel: FGA_API_URL=http://localhost:18080
+// (scripts/tunnel.sh does the TLS; only the loopback hop is plain text).
+//
+// TLS: `npm test` sets NODE_EXTRA_CA_CERTS to the CA in TLS_CA_FILE (default
+// .cache/tls/ca.crt, from scripts/tls.sh), so the SDK and fetch both verify
+// the stack's certificate; grpcurl gets the same CA (grpcurlTls below).
 
 import { execFileSync } from 'node:child_process'
 import { Agent } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { CredentialsMethod, FgaApiValidationError, OpenFgaApi, OpenFgaClient, type AuthorizationModel } from '@openfga/sdk'
 
-export const API_URL = process.env.FGA_API_URL ?? 'http://127.0.0.1:28080'
+export const API_URL = process.env.FGA_API_URL ?? 'https://127.0.0.1:28080'
+export const CA_FILE = process.env.TLS_CA_FILE ?? fileURLToPath(new URL('../../.cache/tls/ca.crt', import.meta.url))
+/** grpcurl's options for the target's gRPC port: TLS when the HTTP API uses it. */
+export const grpcurlTls = API_URL.startsWith('https:') ? ['-cacert', CA_FILE] : ['-plaintext']
 export const API_TOKEN = process.env.FGA_API_TOKEN ?? 'integration-key'
 export const GRPC_ADDR = process.env.FGA_GRPC_ADDR ?? '127.0.0.1:28081'
 export const METRICS_URL = process.env.FGA_METRICS_URL ?? 'http://127.0.0.1:22112/metrics'

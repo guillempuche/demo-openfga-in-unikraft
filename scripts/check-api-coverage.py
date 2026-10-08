@@ -15,14 +15,16 @@ The AuthZEN service is experimental: required only with FGA_EXPERIMENTAL=1
 (default), otherwise listed as excluded.
 
 Environment: the integration suite's FGA_API_URL, FGA_API_TOKEN, FGA_GRPC_ADDR,
-FGA_METRICS_URL, FGA_EXPERIMENTAL (defaults: the compose stack in
-tests/integration). Needs node, the fga CLI and grpcurl on PATH.
+FGA_METRICS_URL, FGA_EXPERIMENTAL and TLS_CA_FILE (defaults: the compose stack
+in tests/integration, over TLS with the CA in .cache/tls). Needs node, the fga
+CLI and grpcurl on PATH.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import ssl
 import subprocess
 import sys
 import time
@@ -40,7 +42,11 @@ EXPERIMENTAL_SERVICES = {"authzen.v1.AuthZenService"}
 EXPECTED_CODE = {"UpdateStore": "Unimplemented"}
 
 METRICS_URL = os.environ.get("FGA_METRICS_URL", "http://127.0.0.1:22112/metrics")
-API_URL = os.environ.get("FGA_API_URL", "http://127.0.0.1:28080")
+API_URL = os.environ.get("FGA_API_URL", "https://127.0.0.1:28080")
+# The CA that signed the compose stack's certificate (scripts/tls.sh); the
+# suite trusts the same file. Unused over http (the Unikraft tunnel).
+CA_FILE = os.environ.get("TLS_CA_FILE", os.path.join(ROOT, ".cache", "tls", "ca.crt"))
+TLS_CONTEXT = ssl.create_default_context(cafile=CA_FILE) if API_URL.startswith("https:") else None
 EXPERIMENTAL = os.environ.get("FGA_EXPERIMENTAL", "1") == "1"
 METRIC_RE = re.compile(r'^grpc_server_handled_total\{([^}]*)\}\s+([0-9.e+]+)$')
 
@@ -78,7 +84,7 @@ def wait_ready(timeout: float = 90) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(f"{API_URL}/healthz", timeout=5) as res:
+            with urllib.request.urlopen(f"{API_URL}/healthz", timeout=5, context=TLS_CONTEXT) as res:
                 if b"SERVING" in res.read():
                     return True
         except OSError:

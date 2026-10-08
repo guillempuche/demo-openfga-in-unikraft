@@ -78,8 +78,10 @@ jobs:
         run: |
           curl -fsSL "https://github.com/openfga/cli/releases/download/v${FGA_VERSION}/fga_${FGA_VERSION}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin fga
           curl -fsSL "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz" | tar -xz -C /usr/local/bin grpcurl
-      - name: Start OpenFGA (v1.21.0, PostgreSQL 16, experimental tier on)
-        run: docker compose -f tests/integration/docker-compose.yaml up -d --wait
+      - name: Start OpenFGA (v1.21.0, PostgreSQL 16, TLS on both hops, experimental tier on)
+        run: |
+          ./scripts/tls.sh
+          docker compose -f tests/integration/docker-compose.yaml up -d --wait
       - run: npm ci
         working-directory: tests/integration
       - run: npm run typecheck

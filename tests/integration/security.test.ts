@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { after, before, describe, it } from 'node:test'
 import { FgaApiAuthenticationError } from '@openfga/sdk'
-import { API_TOKEN, API_URL, GRPC_ADDR, METRICS_URL, client, freshStore, http, rejection } from './helpers.ts'
+import { API_TOKEN, API_URL, GRPC_ADDR, grpcurlTls, METRICS_URL, client, freshStore, http, rejection } from './helpers.ts'
 
 let store: Awaited<ReturnType<typeof freshStore>>
 
@@ -76,7 +76,7 @@ describe('HTTP authentication', () => {
 function grpcurl(args: string[], token: string | null = API_TOKEN): { ok: boolean; out: string } {
   const auth = token ? ['-H', `authorization: Bearer ${token}`] : []
   try {
-    return { ok: true, out: execFileSync('grpcurl', ['-plaintext', ...auth, ...args], { encoding: 'utf8', stdio: 'pipe' }) }
+    return { ok: true, out: execFileSync('grpcurl', [...grpcurlTls, ...auth, ...args], { encoding: 'utf8', stdio: 'pipe' }) }
   } catch (err: any) {
     return { ok: false, out: `${err.stdout ?? ''}${err.stderr ?? ''}` }
   }

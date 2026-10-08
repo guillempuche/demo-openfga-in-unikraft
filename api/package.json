@@ -10,7 +10,7 @@
     "start": "node src/main.ts",
     "test": "npm run build && node --test server.test.ts",
     "typecheck": "tsc --noEmit",
-    "test:integration": "npm run build && node --test integration.test.ts"
+    "test:integration": "npm run build && NODE_EXTRA_CA_CERTS=\"${TLS_CA_FILE:-../.cache/tls/ca.crt}\" node --test integration.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
