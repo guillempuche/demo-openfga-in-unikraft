@@ -1,5 +1,9 @@
 name: CI
 
+# Each action is pinned to a full commit SHA, with its release in a comment.
+# A tag such as v7 can be moved to point at other code; a commit can't.
+# Renovate updates the SHA and the comment together.
+
 on:
   push:
     branches: [main]
@@ -15,7 +19,7 @@ jobs:
     env:
       FGA_VERSION: 0.8.1 # keep in sync with versions.env
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install fga CLI
         run: |
           curl -fsSL "https://github.com/openfga/cli/releases/download/v${FGA_VERSION}/fga_${FGA_VERSION}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin fga
@@ -35,8 +39,8 @@ jobs:
       run:
         working-directory: api
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -49,7 +53,7 @@ jobs:
     name: Shell scripts and compose
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: bash -n scripts/*.sh scripts/env.sh
       - run: ./scripts/check-versions.sh
       - run: ./scripts/check-kraftfiles.sh
@@ -63,8 +67,8 @@ jobs:
       FGA_VERSION: 0.8.1 # keep in sync with versions.env
       GRPCURL_VERSION: 1.9.4
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -95,7 +99,7 @@ jobs:
     name: OpenFGA rootfs builds and runs the official binary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The unikernel rootfs copies the binary out of the pinned official image.
       - run: docker build --platform linux/amd64 --tag demo-fga-openfga-rootfs infrastructure/unikraft/openfga
       - name: Check the binary's version
@@ -107,7 +111,7 @@ jobs:
     name: API rootfs builds and starts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The same Dockerfile the Kraftfile uses for the unikernel rootfs.
       - run: docker build --platform linux/amd64 --tag demo-fga-api-rootfs api
       # Start the rootfs's Node on the bundle, as the unikernel does, with no
