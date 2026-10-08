@@ -47,6 +47,7 @@
             pkgs.python3 # coverage gates (scripts/check-*-coverage.py)
             pkgs.shellcheck # CI lints scripts/ with it
             pkgs.grpcurl # integration suite: gRPC-only UpdateStore
+            pkgs.openssl # scripts/tls.sh and check-tls.sh (macOS ships LibreSSL)
             pkgs.starship # shell beautifier
             pkgs.zsh # ensure zsh is available for nix develop -c zsh
           ];
