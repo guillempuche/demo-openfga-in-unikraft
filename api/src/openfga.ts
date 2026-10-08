@@ -17,9 +17,13 @@
 //   keep them open forever, and with scale-to-zero policy `on` an open TCP
 //   connection keeps the API instance from going to standby. Ours are
 //   destroyed when the service shuts down.
+// - TLS: over https, OpenFGA's certificate must be valid for its hostname and
+//   chain to TLS_CA_PEM (only that CA) when set, else to a public CA. The
+//   health check goes through the same agents, so it reports the same
+//   certificate errors the SDK calls would hit.
 
-import { Agent as HttpAgent } from 'node:http'
-import { Agent as HttpsAgent } from 'node:https'
+import { Agent as HttpAgent, get as httpGet } from 'node:http'
+import { Agent as HttpsAgent, get as httpsGet } from 'node:https'
 import {
   CredentialsMethod,
   FgaApiValidationError,
@@ -36,6 +40,16 @@ import { BadRequest, UpstreamError } from './errors.ts'
 
 const CALL_TIMEOUT = Duration.seconds(5)
 const IDLE_SOCKET = Duration.seconds(4) // same as fetch's keep-alive default
+
+/** The status code of a GET sent through `agent`; the body is discarded. */
+const statusOf = (url: URL, agent: HttpAgent, signal: AbortSignal) =>
+  new Promise<number>((resolve, reject) => {
+    const get = url.protocol === 'https:' ? httpsGet : httpGet
+    get(url, { agent, signal }, (res) => {
+      res.resume()
+      resolve(res.statusCode ?? 0)
+    }).on('error', reject)
+  })
 
 export interface Tuple {
   readonly user: string
@@ -100,15 +114,17 @@ export class OpenFga extends Context.Service<OpenFga>()('OpenFga', {
     const pinnedModelId = Option.getOrUndefined(config.pinnedModelId)
     const agentOptions = { keepAlive: true, timeout: Duration.toMillis(IDLE_SOCKET) }
     const agent = <A extends HttpAgent>(make: () => A) => Effect.acquireRelease(Effect.sync(make), (a) => Effect.sync(() => a.destroy()))
+    const httpAgent = yield* agent(() => new HttpAgent(agentOptions))
+    const httpsAgent = yield* agent(() =>
+      new HttpsAgent({ ...agentOptions, ...Option.match(config.fgaCaCert, { onNone: () => ({}), onSome: (ca) => ({ ca }) }) }),
+    )
+    const openfgaAgent = config.fgaApiUrl.protocol === 'https:' ? httpsAgent : httpAgent
     const client = new OpenFgaClient({
       apiUrl: config.fgaApiUrl.origin,
       credentials: { method: CredentialsMethod.ApiToken, config: { token: Redacted.value(config.fgaKey) } },
       retryParams: { maxRetry: 0 },
       // Spread into every request's axios config, replacing the SDK's agents.
-      baseOptions: {
-        httpAgent: yield* agent(() => new HttpAgent(agentOptions)),
-        httpsAgent: yield* agent(() => new HttpsAgent(agentOptions)),
-      },
+      baseOptions: { httpAgent, httpsAgent },
     })
 
     // Wrap an SDK call: timeout (cancels the request) + typed errors. The SDK
@@ -223,11 +239,11 @@ export class OpenFga extends Context.Service<OpenFga>()('OpenFga', {
 
     /** OpenFGA's own health endpoint; it reports SERVING only when its datastore is ready. */
     const health = Effect.tryPromise({
-      try: (signal) => fetch(`${config.fgaApiUrl.origin}/healthz`, { signal }),
+      try: (signal) => statusOf(new URL('/healthz', config.fgaApiUrl), openfgaAgent, signal),
       catch: (err) => err,
     }).pipe(
       Effect.timeoutOrElse({ duration: Duration.seconds(2), orElse: () => Effect.fail(new Error('timed out')) }),
-      Effect.map((res) => (res.ok ? 'ok' : `HTTP ${res.status}`)),
+      Effect.map((status) => (status >= 200 && status < 300 ? 'ok' : `HTTP ${status}`)),
       Effect.catch((err) => Effect.succeed(`unreachable: ${err instanceof Error ? err.message : String(err)}`)),
     )
 

@@ -1,9 +1,23 @@
+import { X509Certificate } from 'node:crypto'
 import { Config, Duration, Schema } from 'effect'
 
 // The ULID pattern the OpenFGA SDK enforces on store and model ids. Checking it
 // here makes a mistyped FGA_STORE_ID or FGA_MODEL_ID stop the process instead
 // of failing every request.
 const Ulid = Schema.String.check(Schema.isPattern(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/))
+
+// Parsed at startup, so a truncated or wrongly pasted certificate stops the
+// process instead of failing every call to OpenFGA.
+const PemCertificate = Schema.String.check(
+  Schema.makeFilter((pem: string) => {
+    try {
+      new X509Certificate(pem)
+      return true
+    } catch {
+      return 'expected a PEM certificate (-----BEGIN CERTIFICATE-----)'
+    }
+  }),
+)
 
 // Zero or an infinite step would leave nothing to round to.
 const TimeStep = Schema.DurationFromString.check(
@@ -14,14 +28,20 @@ const TimeStep = Schema.DurationFromString.check(
 )
 
 // Read once at startup and validated there: a missing or empty FGA_KEY, a
-// malformed URL, port or duration, a non-ULID store or model id, or an unknown
-// CLIENT_IP_FROM stops the process before it serves anything. FGA_KEY is a
-// Redacted value, so it never shows up in logs or error messages.
+// malformed URL, port, duration or certificate, a non-ULID store or model id,
+// or an unknown CLIENT_IP_FROM stops the process before it serves anything.
+// FGA_KEY is a Redacted value, so it never shows up in logs or error messages.
 export const AppConfig = Config.all({
   port: Config.Port('PORT').pipe(Config.withDefault(8080)),
-  // Private FQDN of the OpenFGA instance on the Unikraft internal network. Only
-  // its origin is used: a path in the URL is ignored.
-  fgaApiUrl: Config.URL('FGA_API_URL').pipe(Config.withDefault(new URL('http://demo-fga-openfga.internal:8080'))),
+  // Private FQDN of the OpenFGA instance on the Unikraft internal network, over
+  // TLS (https) unless the deployment turns it off (INTERNAL_TLS=off). Only its
+  // origin is used: a path in the URL is ignored.
+  fgaApiUrl: Config.URL('FGA_API_URL').pipe(Config.withDefault(new URL('https://demo-fga-openfga.internal:8080'))),
+  // The certificate authority (CA) that signed OpenFGA's TLS certificate, as
+  // PEM text (scripts/tls.sh creates it, deploy.sh passes it). When set, the
+  // connection to OpenFGA trusts this CA and no other; when not, the system's
+  // public CAs, for an OpenFGA with a public certificate.
+  fgaCaCert: Config.option(Config.schema(PemCertificate, 'TLS_CA_PEM')),
   fgaKey: Config.schema(Schema.Redacted(Schema.NonEmptyString), 'FGA_KEY'),
   // The store is looked up by name, so redeploys need no store ID; set
   // FGA_STORE_ID to pin one instead (no lookup by name, no fallback to it).
