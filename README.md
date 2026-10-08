@@ -3,7 +3,7 @@
 [![CI](https://github.com/guillempuche/demo-openfga-in-unikraft/actions/workflows/ci.yml/badge.svg)](https://github.com/guillempuche/demo-openfga-in-unikraft/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grained, relationship-based authorization) on [Unikraft Cloud](https://unikraft.com) unikernels. OpenFGA and PostgreSQL run as **private** instances with no public service, reached over Unikraft's internal network (`<name>.internal`); a small **public** TypeScript API ([Effect](https://effect.website) 4 and the official OpenFGA SDK, on Node.js) sits in front. Measured on Unikraft Cloud: **~1 ms p50** authorization checks from the API to OpenFGA, under 30 MiB of memory each for OpenFGA and the API, and the model tests passing against the deployed store. The same models run locally with Docker Compose.
+Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grained, relationship-based authorization) on [Unikraft Cloud](https://unikraft.com) unikernels. OpenFGA and PostgreSQL run as **private** instances with no public service, reached over Unikraft's internal network (`<name>.internal`) with **TLS on both private hops**, each client verifying the server's certificate; a small **public** TypeScript API ([Effect](https://effect.website) 4 and the official OpenFGA SDK, on Node.js) sits in front. Measured on Unikraft Cloud: **~1 ms p50** authorization checks from the API to OpenFGA, under 30 MiB of memory each for OpenFGA and the API, and the model tests passing against the deployed store. The same models run locally with Docker Compose.
 
 ## At a glance
 
@@ -26,6 +26,7 @@ Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grain
 - [Architecture](#architecture)
 - [Quick start (local)](#quick-start-local)
 - [Deploy to Unikraft Cloud](#deploy-to-unikraft-cloud)
+- [TLS between the API, OpenFGA and PostgreSQL](#tls-between-the-api-openfga-and-postgresql)
 - [Patterns to copy](#patterns-to-copy)
 - [Gotchas](#gotchas)
 - [Authorization models](#authorization-models), and the [OpenFGA features guide](docs/openfga-features.md): every feature with its model excerpt, SDK call and tests
@@ -38,16 +39,16 @@ Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grain
 
 ```
 internet ──HTTPS──▶ demo-fga-api (public, 443→8080)
-                         │  http://demo-fga-openfga.internal:8080
+                         │  https://demo-fga-openfga.internal:8080 (TLS, certificate verified)
                          │  Authorization: Bearer $FGA_KEY
                          ▼
                     demo-fga-openfga (no published ports, scale-to-zero off)
-                         │  postgres://…@demo-fga-postgres.internal:5432
+                         │  postgres://…@demo-fga-postgres.internal:5432?sslmode=verify-full
                          ▼
                     demo-fga-postgres (no published ports, volume demo-fga-pgdata)
 ```
 
-- Every instance gets a private IP and a private FQDN `<instance-name>.internal` on the account's internal network ([docs](https://unikraft.com/docs/platform/networking)). OpenFGA and Postgres publish no service, so none of their ports (8080 HTTP, 8081 gRPC, 3000 Playground, 2112 metrics, 5432) are reachable from the internet. The exception is an open `unikraft instances tunnel`, whose relay is publicly addressable ([details](#tunnels-create-publicly-addressable-relay-instances)). Internal traffic is unencrypted but never leaves the account's network.
+- Every instance gets a private IP and a private FQDN `<instance-name>.internal` on the account's internal network ([docs](https://unikraft.com/docs/platform/networking)). OpenFGA and Postgres publish no service, so none of their ports (8080 HTTP, 8081 gRPC, 3000 Playground, 2112 metrics, 5432) are reachable from the internet. The exception is an open `unikraft instances tunnel`, whose relay is publicly addressable ([details](#tunnels-create-publicly-addressable-relay-instances)). Unikraft doesn't encrypt that network, so both private hops use TLS ([details](#tls-between-the-api-openfga-and-postgresql)).
 - OpenFGA requires a preshared key (`OPENFGA_AUTHN_METHOD=preshared`). The Playground is disabled in the cloud.
 - The API ([`api/src/`](api/src), Effect 4 + the official `@openfga/sdk`) finds OpenFGA by `.internal` name and the store by name (`demo-fga`), so it needs no IP or store ID and survives redeploys without config changes.
 - Postgres keeps its data on a 512 MiB volume that survives instance deletion.
@@ -65,11 +66,12 @@ The public API is a demo: `/check` answers any authorization question without au
 Needs Docker and the [OpenFGA CLI](https://openfga.dev/docs/getting-started/cli) (`fga`); `nix develop` provides `fga`, `unikraft`, `node` and `jq`.
 
 ```bash
+./scripts/tls.sh                      # once: certificates for TLS, in .cache/tls
 cp authz/.env.example authz/.env
 docker compose -f authz/docker-compose.yaml --env-file authz/.env up -d
 ```
 
-This starts PostgreSQL, runs OpenFGA's migrations, and serves OpenFGA v1.21.0 through Caddy at `http://localhost:8080` (preshared key `dev-key-1`).
+This starts PostgreSQL, runs OpenFGA's migrations, and serves OpenFGA v1.21.0 through Caddy at `http://localhost:8080` (preshared key `dev-key-1`). As in the deployment, OpenFGA serves only TLS and reaches PostgreSQL over TLS with its certificate verified, under the deployment's private names; Caddy is the way in from this machine, in plain HTTP on the loopback interface only.
 
 The OpenFGA Playground is deprecated and, since v1.14, refuses to run with preshared-key authentication. To use it locally, start the optional profile: a second OpenFGA on the same database, without authentication, bound to this machine only.
 
@@ -114,6 +116,7 @@ cp .env.example .env
 # UNIKRAFT_PROFILE=<your-profile>             (see `unikraft profile list`)
 # FGA_KEY=$(openssl rand -hex 32)
 # POSTGRES_PASSWORD=$(openssl rand -hex 24)
+./scripts/tls.sh                              # TLS certificates for the private network, in .cache/tls
 ```
 
 `.env` is gitignored. The scripts never print secrets and pin every `unikraft` call to `UNIKRAFT_PROFILE`, so they never act on whichever profile happens to be active. Variables you export take precedence over `.env`. To use an external Postgres instead of the private instance, set `OPENFGA_DATASTORE_URI` and skip the `postgres` step.
@@ -216,6 +219,8 @@ unikraft instances get demo-fga-openfga -f name,state,networks,service
 
 `check-e2e.sh` also prints a fingerprint of the `demo-fga` store (store ID, latest model ID, hash of the stored tuples) and compares it with the previous run. Run it before and after a redeploy to show the data survived.
 
+With TLS on, OpenFGA's HTTP and gRPC ports accept only TLS: the tunnels carry it end to end, and [`tls-forward.mjs`](scripts/tls-forward.mjs) serves `localhost:18080` and `18081` in plain text on the loopback interface, checking OpenFGA's certificate. The `fga` CLI can't be given a private CA on macOS, so this keeps every tool's URL unchanged.
+
 Stop `tunnel.sh` with Ctrl-C: it closes all three tunnels with one signal each, which removes their relay instances. If the tunnel's control connection drops (seen on a VPN: `control relay … broken pipe`), the CLI can't delete its relays itself; check `unikraft instances list` for `utils/tunnel` instances afterwards (none were left when it happened here).
 
 ### Verify
@@ -225,6 +230,12 @@ Stop `tunnel.sh` with Ctrl-C: it closes all three tunnels with one signal each, 
 ```
 
 It calls the public API and checks the answers (`/health` reaches OpenFGA; `/check`, `/batch-check` and `/list-objects` allow alice and deny mallory; three `/bench` runs). It compares what `demo-fga-openfga.internal` resolves to from inside the API with the instance's current private IP, checks that every instance runs its recorded image digest with restart policy `always`, and that the API sits in the persistent service group. It also checks that OpenFGA and Postgres have no service, that no `demo-fga-*` instance other than the API and no open tunnel relay has a public domain (other workloads on the account are ignored), and that ports 8080/8081/3000/2112/5432 don't answer. It exits non-zero if any check fails.
+
+```bash
+./scripts/check-tls.sh
+```
+
+It opens its own short-lived tunnels and checks TLS on the private network: OpenFGA's HTTP and gRPC and PostgreSQL's certificates verify against the CA for their private names over TLS 1.3, plain text is refused by both, every connection OpenFGA holds to PostgreSQL is encrypted, the API reaches OpenFGA, and each certificate's expiry date (it fails within 30 days of it). It needs OpenSSL 3 and `psql`; `nix develop` provides both.
 
 To time a wake from scale-to-zero, run `./scripts/measure-wake.sh [runs]`: it waits for the API to go to standby, then times `/health` from standby and while running.
 
@@ -241,7 +252,7 @@ API endpoints:
 
 Errors are JSON, `{"_tag": "…", "message": "…"}`: `BadRequest` (400, including invalid query or body and OpenFGA's validation errors), `UnsupportedMediaType` (415, `/batch-check` without a JSON body), `Busy` (429, a bench is already running) and `UpstreamError` (502, OpenFGA failed or timed out after 5 s, with its HTTP status in the message). A 500 is a bug in the API: it's logged as one JSON `ERROR` line. Only OpenFGA 5xx and network errors are retried, once.
 
-Configuration (environment): `FGA_KEY` (required, non-empty), `FGA_API_URL` (default `http://demo-fga-openfga.internal:8080`; only its origin is used), `FGA_STORE_NAME` (default `demo-fga`) or `FGA_STORE_ID` (a ULID; pins the store), `FGA_MODEL_ID` (a ULID; pins the model, otherwise the store's latest), `FGA_STORE_CACHE_TTL` (how long the store and model lookup is cached, default `30 seconds`), `CLIENT_IP_FROM` (`socket`, the default, or `x-forwarded-for`), `CURRENT_TIME_STEP` (default `10 seconds`) and `PORT` (default 8080). The process exits at startup, with one JSON `FATAL` line, if any of them is invalid.
+Configuration (environment): `FGA_KEY` (required, non-empty), `FGA_API_URL` (default `https://demo-fga-openfga.internal:8080`; only its origin is used), `TLS_CA_PEM` (the CA OpenFGA's certificate must chain to, as PEM text; when set, the API trusts no other CA for OpenFGA), `FGA_STORE_NAME` (default `demo-fga`) or `FGA_STORE_ID` (a ULID; pins the store), `FGA_MODEL_ID` (a ULID; pins the model, otherwise the store's latest), `FGA_STORE_CACHE_TTL` (how long the store and model lookup is cached, default `30 seconds`), `CLIENT_IP_FROM` (`socket`, the default, or `x-forwarded-for`), `CURRENT_TIME_STEP` (default `10 seconds`) and `PORT` (default 8080). The process exits at startup, with one JSON `FATAL` line, if any of them is invalid.
 
 ### Redeploy
 
@@ -274,6 +285,62 @@ unikraft volumes delete demo-fga-pgdata -o quiet
 unikraft images delete <org>/demo-fga-api:latest
 ```
 
+## TLS between the API, OpenFGA and PostgreSQL
+
+The private network carries the OpenFGA key (from the API to OpenFGA) and the authorization data (between OpenFGA and PostgreSQL). Unikraft's [networking docs](https://unikraft.com/docs/platform/networking) describe that traffic as private but unencrypted, and every instance in the same account can reach it. So both hops use TLS (Transport Layer Security, the encryption behind HTTPS), and each client checks the server's certificate: it must be signed by the demo's own certificate authority (CA) and issued for the server's private name. Someone on that network can neither read nor change the traffic, and a machine answering in OpenFGA's or PostgreSQL's place can't present such a certificate. For an authorization service, changed traffic is the bigger risk: an added relationship tuple is a granted permission.
+
+| Hop | The client checks | The server refuses |
+| --- | --- | --- |
+| API → OpenFGA, `https://demo-fga-openfga.internal:8080` (and gRPC on 8081) | The certificate chains to `TLS_CA_PEM` and names `demo-fga-openfga.internal` | Plain HTTP (400) |
+| OpenFGA → PostgreSQL, `sslmode=verify-full` | The certificate chains to the CA and names `demo-fga-postgres.internal` | Unencrypted connections ("no encryption", [`pg_hba_tls.conf`](infrastructure/unikraft/postgres/fs/etc/postgresql/pg_hba_tls.conf)); TLS below 1.3 |
+
+Passwords keep working as before on top: OpenFGA's preshared key, and PostgreSQL's password, checked with SCRAM (which never sends it). Two links stay outside: OpenFGA's Prometheus metrics port (2112) has no TLS setting, so it stays plain HTTP with no published port; and the hop from Unikraft's load balancer, which ends the public HTTPS, to the API belongs to the platform.
+
+### Certificates
+
+```bash
+./scripts/tls.sh             # once: .cache/tls (gitignored); running it again keeps the files
+./scripts/tls.sh --renew     # new server certificates from the same CA, then redeploy
+./scripts/tls.sh --new-ca    # replace everything, then redeploy every instance
+```
+
+- `ca.crt` and `ca.key`: a private CA (ECDSA P-256, valid 5 years). Only `ca.crt` is deployed; `ca.key` signs the server certificates and stays on your machine.
+- `postgres.crt`/`.key` and `openfga.crt`/`.key`: server certificates valid for one year and only for the instance's private name (OpenFGA's also for `localhost`, which its HTTP server uses to reach its own gRPC server).
+
+`deploy.sh` checks the files before deploying ([`check-certificates.mjs`](scripts/check-certificates.mjs)): each certificate chains to the CA, matches its key, names the right host and hasn't expired. It warns 30 days before an expiry, and `check-tls.sh` fails then. To use certificates from your own CA (a company CA, Vault, step-ca, cert-manager), skip `tls.sh` and set `TLS_CA_FILE`, `POSTGRES_TLS_CERT_FILE`, `POSTGRES_TLS_KEY_FILE`, `OPENFGA_TLS_CERT_FILE` and `OPENFGA_TLS_KEY_FILE` in `.env` (see [`.env.example`](.env.example)); a certificate file may include intermediate certificates after the server's.
+
+### How the certificates reach each service
+
+Unikraft instances receive secrets as environment variables, not files, so `deploy.sh` passes the certificates and keys as PEM text (`TLS_CERT_PEM`, `TLS_KEY_PEM`, `TLS_CA_PEM`) in the same 0600 spec as the passwords. Each image turns them into the files its server reads: [`wrapper.sh`](infrastructure/unikraft/postgres/wrapper.sh) for PostgreSQL, and [`entrypoint.sh`](infrastructure/unikraft/openfga/entrypoint.sh) for OpenFGA (a static busybox gives the OpenFGA image a shell for it). The API reads `TLS_CA_PEM` itself.
+
+### Running it on other hosts
+
+Every component uses its standard TLS settings, so the same setup moves to other platforms:
+
+| Component | Hosts that mount secret files (Kubernetes, Docker secrets, cert-manager) | Hosts with environment variables only (Unikraft, and PaaS without file mounts) |
+| --- | --- | --- |
+| OpenFGA (official image) | `OPENFGA_HTTP_TLS_ENABLED`, `OPENFGA_HTTP_TLS_CERT`, `OPENFGA_HTTP_TLS_KEY` and the same `OPENFGA_GRPC_TLS_*` (file paths) | This repo's OpenFGA image: `TLS_CERT_PEM`, `TLS_KEY_PEM` |
+| OpenFGA → PostgreSQL | `OPENFGA_DATASTORE_URI=…?sslmode=verify-full&sslrootcert=/path/ca.crt` | `TLS_CA_PEM`, with `sslrootcert=/tmp/tls/ca.crt` in the URI |
+| PostgreSQL (official image) | `-c ssl=on -c ssl_cert_file=… -c ssl_key_file=… -c hba_file=pg_hba_tls.conf` | This repo's PostgreSQL image: `TLS_CERT_PEM`, `TLS_KEY_PEM` |
+| The API | `NODE_EXTRA_CA_CERTS=/path/ca.crt` (Node.js's standard setting) | `TLS_CA_PEM` |
+| Managed PostgreSQL | Public CA (Neon, Supabase): `sslmode=verify-full&sslrootcert=system`. Provider CA (Amazon RDS, Cloud SQL): `OPENFGA_DATASTORE_CA_FILE` | Same |
+
+Working examples of both columns: [`tests/integration/docker-compose.yaml`](tests/integration/docker-compose.yaml) and [`authz/docker-compose.yaml`](authz/docker-compose.yaml) use the file settings with the official images (a `tls-files` step gives each key to the one user that reads it, as a Kubernetes secret volume would); [`tests/tls-chain/docker-compose.yaml`](tests/tls-chain/docker-compose.yaml) runs this repo's images with the environment variables, as deployed.
+
+### Turning it off
+
+Set `INTERNAL_TLS=off` in `.env` and redeploy: the private hops go back to plain text. Do that only where something else already encrypts and authenticates that traffic, such as a service mesh with mutual TLS (Istio, Linkerd).
+
+### How it's checked
+
+| Check | Where | What |
+| --- | --- | --- |
+| [`check-tls-chain.sh`](scripts/check-tls-chain.sh) | CI, Docker | This repo's API and OpenFGA images and a TLS-only PostgreSQL under the private names: certificates verified on every hop, plain text and an unknown CA refused, every OpenFGA connection encrypted, a check answered end to end |
+| [`check-postgres-image.sh`](scripts/check-postgres-image.sh) | CI when the image changes | The PostgreSQL image with TLS (TLS 1.3 with `verify-full`, plain text refused) and without |
+| `npm test` in `api/` | CI | The API against an HTTPS stub: the right CA works; another CA or none is refused |
+| The integration suite and API integration tests | CI | Every OpenFGA RPC over TLS, on a stack with TLS on both hops |
+| [`check-tls.sh`](scripts/check-tls.sh) | The deployment | The same checks on Unikraft, through tunnels, plus each certificate's expiry |
+
 ## Patterns to copy
 
 | Pattern | Where | Why |
@@ -295,6 +362,9 @@ unikraft images delete <org>/demo-fga-api:latest
 | OpenFGA SDK as an Effect service | [`api/src/openfga.ts`](api/src/openfga.ts) | One retry policy (SDK retries off), a timeout that cancels the request, and SDK errors mapped to typed API errors. |
 | One schema per endpoint for validation, errors and OpenAPI | [`api/src/api.ts`](api/src/api.ts) | The OpenAPI document can't drift from what the server accepts. |
 | Bundle to one file for a scratch rootfs | [`api/Dockerfile`](api/Dockerfile) | The unikernel ships Node and one `.mjs`, no `node_modules`. |
+| TLS on private hops with a private CA, verified by name | [`scripts/tls.sh`](scripts/tls.sh), [`scripts/deploy.sh`](scripts/deploy.sh) | A private network isn't an encrypted one; `verify-full` and per-name certificates stop a look-alike server. |
+| Certificates as environment variables, written to files at start | [`entrypoint.sh`](infrastructure/unikraft/openfga/entrypoint.sh), [`wrapper.sh`](infrastructure/unikraft/postgres/wrapper.sh) | Unikernels and many PaaS can't mount secret files; the servers only read files. |
+| A local TLS client in front of tools that can't take a CA | [`scripts/tls-forward.mjs`](scripts/tls-forward.mjs) | Only the loopback hop is plain text, as with Google's Cloud SQL Auth Proxy. |
 
 ## Gotchas
 
@@ -382,6 +452,30 @@ The deployment enables OpenFGA's check cache (`OPENFGA_CHECK_QUERY_CACHE_ENABLED
 
 With scale-to-zero policy `on`, an instance stays up while any TCP connection is open, including its own outgoing ones. `@openfga/sdk` (0.9.7) creates `http.Agent({ keepAlive: true })` with no idle timeout, so the first Effect API stayed `running` for minutes. [`api/src/openfga.ts`](api/src/openfga.ts) passes agents that close idle sockets after 4 s, and a test checks it; the API now goes to standby about 14 s after its last request.
 
+### OpenFGA reads TLS certificates only from files
+
+`OPENFGA_HTTP_TLS_CERT` and `OPENFGA_HTTP_TLS_KEY` (and the gRPC ones) are file paths; there's no setting for the PEM text, and the official image has no shell to write it. Unikraft passes secrets as environment variables, so this repo's OpenFGA image adds a static busybox and [`entrypoint.sh`](infrastructure/unikraft/openfga/entrypoint.sh), which writes them to `/tmp/tls` and then runs `openfga`. OpenFGA also watches the files for changes with inotify; it starts fine on Unikraft (tested before building on it).
+
+### OpenFGA's own gRPC certificate needs `localhost`
+
+With gRPC TLS on, OpenFGA's HTTP server forwards each request to its gRPC server: over a Unix socket when it can (no certificate check), otherwise over TCP to `localhost:8081`, checking the gRPC certificate for the name `localhost`. A certificate with only `demo-fga-openfga.internal` fails then (`x509: certificate is valid for demo-fga-openfga.internal, not localhost`), so [`tls.sh`](scripts/tls.sh) adds `localhost` and `127.0.0.1` to OpenFGA's.
+
+### The fga CLI on macOS can't be given a private CA
+
+Go programs on macOS check certificates only against the system keychain and ignore `SSL_CERT_FILE`, and the `fga` CLI has no CA option. Rather than adding the demo's CA to the keychain, [`tunnel.sh`](scripts/tunnel.sh) runs a local TLS client ([`tls-forward.mjs`](scripts/tls-forward.mjs)) and `fga` talks plain HTTP to it on the loopback interface; the local Compose stack does the same with Caddy.
+
+### PostgreSQL refuses a private key that others can read
+
+PostgreSQL won't start unless its key file is owned by its own user with mode 0600 (or by root with at most 0640). A key mounted straight from the host keeps the host's owner, so the Compose stacks copy each key to a volume, owned by the service that reads it, before starting; the unikernel image writes its key from the environment with 0600.
+
+### macOS's `openssl` writes EC keys that OpenSSL 3, Go and Node.js reject
+
+macOS ships LibreSSL as `openssl`. Its `genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256` writes the curve as explicit parameters, which other TLS libraries reject ("certificate public key has explicit ECC parameters"). [`tls.sh`](scripts/tls.sh) uses `ecparam -name prime256v1 -genkey`, which writes the curve's name and works with both LibreSSL and OpenSSL 3.
+
+### `verify-full` needs the name, not the IP
+
+`sslmode=verify-full` checks PostgreSQL's certificate against the host in the connection string. Connecting by IP fails (`certificate is not valid for … because it doesn't contain any IP SANs`), so OpenFGA connects to `demo-fga-postgres.internal`. To connect from this machine through a tunnel with full checking, give libpq both: `host=demo-fga-postgres.internal hostaddr=127.0.0.1`.
+
 ## Authorization models
 
 The modules live in `authz/models/` and run unchanged locally and on Unikraft:
@@ -423,14 +517,15 @@ To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<n
 
 ## Repository layout
 
-- `authz/` – local Docker Compose stack (PostgreSQL, OpenFGA, Caddy; optional Playground profile).
+- `authz/` – local Docker Compose stack (PostgreSQL, OpenFGA, Caddy; optional Playground profile), with TLS on both private hops.
 - `authz/models/` – FGA modules and their tests.
 - `authz/seed/tuples.yaml` – synthetic tuples for the demo store.
 - `api/` – public demo API (Effect 4, `@openfga/sdk`, Node.js 24; bundled into one file for the unikernel), its tests, Kraftfile and Dockerfile.
-- `infrastructure/unikraft/openfga/` – OpenFGA Kraftfile and Dockerfile (copies the static binary out of the official `openfga/openfga` image, pinned by its signed digest).
+- `infrastructure/unikraft/openfga/` – OpenFGA Kraftfile, Dockerfile (copies the static binary out of the official `openfga/openfga` image, pinned by its signed digest) and `entrypoint.sh` (TLS certificates from environment variables).
 - `infrastructure/unikraft/postgres/` – PostgreSQL Kraftfile and rootfs, from the [Unikraft examples](https://github.com/unikraft-cloud/examples/tree/main/postgres) (see [NOTICE](NOTICE)).
-- `scripts/` – `unikraft` CLI wrappers (build, deploy, tunnel, seed, test-remote, test-integration-remote, verify, cleanup) and the coverage gates.
-- `tests/integration/` – OpenFGA integration suite (`@openfga/sdk`, `node:test`) and its throwaway compose stack.
+- `scripts/` – `unikraft` CLI wrappers (build, deploy, tunnel, seed, test-remote, test-integration-remote, verify, cleanup), the coverage gates, and TLS: `tls.sh` (certificates), `check-certificates.mjs`, `tls-forward.mjs` (the tunnel's local TLS client), `check-tls.sh` (the deployment) and `check-tls-chain.sh` (a Docker rehearsal).
+- `tests/integration/` – OpenFGA integration suite (`@openfga/sdk`, `node:test`) and its throwaway compose stack (TLS on both hops).
+- `tests/tls-chain/` – the Compose stack `check-tls-chain.sh` runs: this repo's API and OpenFGA images under the instances' private names.
 - `versions.env` – pinned OpenFGA and fga CLI versions; `scripts/check-versions.sh` (in CI) checks every other pin against it.
 - `docs/openfga-features.md` – every OpenFGA feature used here, with model excerpts, SDK calls (plain and Effect) and the tests that cover it.
 - `docs/RESULTS.md` – measured results on Unikraft Cloud. `docs/archive/` holds historical notes from the legacy `kraft cloud` setup.
@@ -452,6 +547,7 @@ To add a module: create `authz/models/<name>.fga`, list it in `fga.mod`, add `<n
 | Experimental (local/CI only) | AuthZEN: Evaluation, Evaluations, SubjectSearch, ResourceSearch, ActionSearch, GetConfiguration | inline `$expression` conditions |
 
 ```bash
+./scripts/tls.sh                                                       # once: the certificates the stack uses (TLS on both hops)
 docker compose -f tests/integration/docker-compose.yaml up -d --wait   # OpenFGA v1.21.0 + PostgreSQL 16, experimental tier on, list max results 100
 (cd tests/integration && npm ci)
 python3 scripts/check-api-coverage.py                                  # runs the suite + the API coverage gate
@@ -466,6 +562,7 @@ fga model test --tests 'authz/models/*.fga.yaml'
 python3 scripts/check-model-coverage.py
 cd api && npm ci && npm run typecheck && npm test
 python3 scripts/check-api-coverage.py   # needs the tests/integration compose stack
+./scripts/check-tls-chain.sh            # API -> OpenFGA -> PostgreSQL over TLS, in Docker
 ```
 
 CI runs these, plus `shellcheck` on the scripts, the version check, a Compose config check and a build of the API rootfs.

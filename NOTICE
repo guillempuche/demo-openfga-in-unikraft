@@ -15,12 +15,15 @@ infrastructure/unikraft/postgres/
   max_wal_size; in the Dockerfile, base images pinned by digest, downloads
   checked by SHA-256, the extension pinned to a commit, the version set once
   (ARG PG_VERSION), the runtime libraries collected with ldd instead of
-  listed by name, and the unused OpenSSL rename and runtime packages removed.
+  listed by name, the unused OpenSSL rename and runtime packages removed, and
+  TLS: built with OpenSSL, wrapper.sh's TLS setup and pg_hba_tls.conf.
 
 infrastructure/unikraft/postgres/wrapper.sh
   Derived from the docker-library/postgres entrypoint script:
   https://github.com/docker-library/postgres
   MIT License, Copyright (c) 2014, Docker PostgreSQL Authors.
+  Local changes: the version read from the image (PG_VERSION) and the TLS
+  setup (pg_tls_setup and the ssl options in _main).
 
 Software built into the images (not stored in this repository)
 --------------------------------------------------------------
