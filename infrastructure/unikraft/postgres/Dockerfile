@@ -201,9 +201,11 @@ RUN set -eu; \
 
 ##
 ## Stage 4: the image the unikernel boots. busybox provides the small shell and
-## core commands wrapper.sh uses; the rest is the rootfs collected above.
+## core commands wrapper.sh uses; the rest is the rootfs collected above. The
+## musl variant is a single static program, so the image has one C library
+## (Alpine's musl); the default variant adds glibc's files, which nothing uses.
 ##
-FROM busybox:1.38.0@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+FROM busybox:1.38.0-musl@sha256:ea2b9914a16a4ac1981994af97b318f7c7d4db76b580c56177f08bf76f4a0be8
 
 # wrapper.sh reads the PostgreSQL version from the environment. ARG brings in
 # the value from the top of the file (see stage 1); ENV keeps it in the image,
