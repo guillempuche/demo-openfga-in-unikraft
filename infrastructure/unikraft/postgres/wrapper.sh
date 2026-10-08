@@ -268,6 +268,25 @@ _pg_want_help() {
         return 1
 }
 
+# Local change (TLS, not in docker-library's script): PostgreSQL reads its
+# certificate and private key only from files, but the deployment passes them
+# as PEM text in TLS_CERT_PEM and TLS_KEY_PEM (Unikraft instances get secrets
+# through environment variables, not files). Write them to /tmp/tls, outside
+# the data volume, with the key private to its owner (0600), which PostgreSQL
+# requires. Then drop them from the environment, so PostgreSQL's processes
+# don't inherit them.
+pg_tls_setup() {
+        : "${TLS_KEY_PEM:?TLS_CERT_PEM is set, but TLS_KEY_PEM is not}"
+        PG_TLS_DIR=/tmp/tls
+        (
+                umask 077
+                mkdir -p "$PG_TLS_DIR"
+                printf '%s\n' "$TLS_CERT_PEM" > "$PG_TLS_DIR/server.crt"
+                printf '%s\n' "$TLS_KEY_PEM" > "$PG_TLS_DIR/server.key"
+        )
+        unset TLS_CERT_PEM TLS_KEY_PEM
+}
+
 _main() {
         if [ -z "$LANG" ]; then
                 export LANG=en_US.utf8
@@ -284,6 +303,19 @@ _main() {
         # if first arg looks like a flag, assume we want to run postgres server
         if [ "${1:0:1}" = '-' ]; then
                 set -- postgres "$@"
+        fi
+
+        # Local change (TLS): with a certificate, serve TLS 1.3 only and refuse
+        # unencrypted network connections (pg_hba_tls.conf). Added before the
+        # first-boot setup below, whose temporary server also gets these options.
+        if [ "$1" = 'postgres' ] && [ -n "${TLS_CERT_PEM:-}" ]; then
+                pg_tls_setup
+                set -- "$@" \
+                        -c ssl=on \
+                        -c ssl_cert_file="$PG_TLS_DIR/server.crt" \
+                        -c ssl_key_file="$PG_TLS_DIR/server.key" \
+                        -c ssl_min_protocol_version=TLSv1.3 \
+                        -c hba_file=/etc/postgresql/pg_hba_tls.conf
         fi
 
         if [ "$1" = 'postgres' ] && ! _pg_want_help "$@"; then
