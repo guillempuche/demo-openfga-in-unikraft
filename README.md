@@ -16,10 +16,11 @@ Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grain
 | API woken from scale-to-zero standby | p50 +0.21 s over a running instance (10 runs) |
 | Same, OpenFGA check cache off (1 Postgres round trip) | p50 1.5–1.8 ms |
 | Exposure | No service on OpenFGA or Postgres; ports 8080/8081/3000/2112/5432 don't answer; no key → `401` |
+| TLS on the private hops | API → OpenFGA HTTPS and gRPC, OpenFGA → Postgres `verify-full`: TLS 1.3, certificates verified by name, plain text refused on both; `/bench` p50 0.90–1.21 ms with TLS |
 | Redeploy (delete + run, 32 s) | Every private IP changed and was reused by another instance; `.internal` names kept working with no config change |
 | `fga model test` against the deployed server (v1.21.0, fresh store) | 109/109 tests: 323 checks, 14 ListObjects, 17 ListUsers |
 | OpenFGA API | All 19 core RPCs called and asserted on Unikraft in 138 tests (server metrics as proof); +6 AuthZEN RPCs on the experimental local/CI stack |
-| Memory | OpenFGA 17.6 MiB RSS, API 25–29 MiB RSS (512 MiB allocated each) |
+| Memory | OpenFGA 17.6 MiB RSS (20.2 MiB with TLS), API 25–29 MiB RSS (512 MiB allocated each) |
 
 ## Contents
 
