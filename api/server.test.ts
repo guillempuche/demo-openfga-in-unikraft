@@ -2063,9 +2063,10 @@ describe('shutdown', () => {
       assert.equal(res.connection, 'close')
     })
 
-    it('should exit within 1 s of SIGTERM, without waiting for the client to close the connection', () => {
-      // THEN the API exits right after answering
-      assert.ok(exitMs < 1000, `exit took ${Math.round(exitMs)} ms`)
+    it('should exit within 2 s of SIGTERM, without waiting for the client to close the connection', () => {
+      // THEN the API exits right after answering (OpenFGA's 500 ms included;
+      // waiting for the client took over 6 s)
+      assert.ok(exitMs < 2000, `exit took ${Math.round(exitMs)} ms`)
     })
   })
 })
