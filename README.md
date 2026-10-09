@@ -255,6 +255,8 @@ Errors are JSON, `{"_tag": "…", "message": "…"}`: `BadRequest` (400, includi
 
 Configuration (environment): `FGA_KEY` (required, non-empty), `FGA_API_URL` (default `https://demo-fga-openfga.internal:8080`; only its origin is used), `TLS_CA_PEM` (the CA OpenFGA's certificate must chain to, as PEM text; when set, the API trusts no other CA for OpenFGA), `FGA_STORE_NAME` (default `demo-fga`) or `FGA_STORE_ID` (a ULID; pins the store), `FGA_MODEL_ID` (a ULID; pins the model, otherwise the store's latest), `FGA_STORE_CACHE_TTL` (how long the store and model lookup is cached, default `30 seconds`), `CLIENT_IP_FROM` (`socket`, the default, or `x-forwarded-for`), `CURRENT_TIME_STEP` (default `10 seconds`) and `PORT` (default 8080). The process exits at startup, with one JSON `FATAL` line, if any of them is invalid.
 
+On SIGTERM or SIGINT (`docker stop`, `kill`, Ctrl-C), the API stops taking connections, finishes the requests already in flight and exits. Those last answers carry `Connection: close`, so a client that keeps connections open (keep-alive) doesn't hold the shutdown up.
+
 ### Redeploy
 
 Never restart in place; delete and run again. The volume, and so the store, model and tuples, survives, the instances come back on the same image digests and pinned model, and the API on the same URL:
