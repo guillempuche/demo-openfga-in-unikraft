@@ -66,6 +66,38 @@ TUNNEL_PORT="${TUNNEL_PORT:-18080}"
 TUNNEL_GRPC_PORT="${TUNNEL_GRPC_PORT:-18081}"
 TUNNEL_METRICS_PORT="${TUNNEL_METRICS_PORT:-12112}"
 
+# TLS (encrypted, authenticated connections) on the private network: the API
+# reaches OpenFGA over HTTPS, OpenFGA reaches PostgreSQL with verify-full, and
+# each client checks the server's certificate against TLS_CA_FILE. On unless
+# INTERNAL_TLS=off (when the platform or a service mesh already encrypts this
+# traffic). The files come from scripts/tls.sh, or are your own: see
+# .env.example.
+INTERNAL_TLS="${INTERNAL_TLS:-on}"
+TLS_CA_FILE="${TLS_CA_FILE:-$ROOT/.cache/tls/ca.crt}"
+POSTGRES_TLS_CERT_FILE="${POSTGRES_TLS_CERT_FILE:-$ROOT/.cache/tls/postgres.crt}"
+POSTGRES_TLS_KEY_FILE="${POSTGRES_TLS_KEY_FILE:-$ROOT/.cache/tls/postgres.key}"
+OPENFGA_TLS_CERT_FILE="${OPENFGA_TLS_CERT_FILE:-$ROOT/.cache/tls/openfga.crt}"
+OPENFGA_TLS_KEY_FILE="${OPENFGA_TLS_KEY_FILE:-$ROOT/.cache/tls/openfga.key}"
+case "$INTERNAL_TLS" in
+  on | off) ;;
+  *) echo "error: INTERNAL_TLS must be on or off, not '$INTERNAL_TLS'" >&2; exit 1 ;;
+esac
+tls_on() { [[ "$INTERNAL_TLS" == on ]]; }
+# With TLS, tunnel.sh's tunnels listen on these ports and carry TLS end to end;
+# a local TLS client (tls-forward.mjs) serves TUNNEL_PORT and TUNNEL_GRPC_PORT.
+TUNNEL_TLS_PORT="${TUNNEL_TLS_PORT:-19080}"
+TUNNEL_TLS_GRPC_PORT="${TUNNEL_TLS_GRPC_PORT:-19081}"
+
+# Check the CA and any <certificate file> <key file> <hostname> triples
+# before they're used (scripts/check-certificates.mjs).
+check_certificates() {
+  if [[ ! -f "$TLS_CA_FILE" ]]; then
+    echo "error: no CA certificate at $TLS_CA_FILE: run ./scripts/tls.sh, or set TLS_CA_FILE (see .env.example)" >&2
+    exit 1
+  fi
+  node "$ROOT/scripts/check-certificates.mjs" "$TLS_CA_FILE" "$@"
+}
+
 require() {
   local v
   for v in "$@"; do

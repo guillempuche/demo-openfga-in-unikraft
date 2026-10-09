@@ -6,7 +6,7 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=results.tap '*.test.ts'",
+    "test": "NODE_EXTRA_CA_CERTS=\"${TLS_CA_FILE:-../../.cache/tls/ca.crt}\" node --test --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=results.tap '*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -6,6 +6,10 @@ Notable changes to this example. Results behind each claim are in [docs/RESULTS.
 
 ### Deployment
 
+- Encrypted both private hops with TLS: the API reaches OpenFGA over HTTPS and OpenFGA reaches PostgreSQL with `verify-full`, each checking the server's certificate against a private CA. On by default (`INTERNAL_TLS=off` turns it off); `tls.sh` issues the certificates, or bring your own.
+- Checked TLS on the deployment with `check-tls.sh`, in Docker with `check-tls-chain.sh` (CI), and in the PostgreSQL image check; ran the integration suite over TLS.
+- Kept the tunnel's local URLs with a local TLS client (`tls-forward.mjs`), and moved the local Compose stack to TLS behind a loopback-only Caddy.
+- Pinned the Node.js base image by digest.
 - Ran the official, cosign-signed OpenFGA binary (pinned by digest) instead of a source build, checked in CI.
 - Applied OpenFGA's production settings: query limits, concurrent-read limits, datastore metrics and RPC histograms.
 - Kept the API's public URL across redeploys with a persistent service group; `cleanup.sh --service` deletes it.

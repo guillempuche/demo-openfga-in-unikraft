@@ -58,6 +58,7 @@ RUN apk add --no-cache --virtual .build-deps \
         linux-headers \
         git \
         icu-dev \
+        openssl-dev \
     ;
 
 # Download the sources; the next step checks them before anything is unpacked.
@@ -83,8 +84,8 @@ RUN set -eu; \
 # which the later stages copy from. The plain `make install` also installs
 # PostgreSQL in this stage's /usr/local, where the extension build below finds
 # it.
-# There is no --with-ssl, so the server has no TLS (encrypted connections):
-# OpenFGA reaches it only over Unikraft's private network (scripts/deploy.sh).
+# --with-ssl=openssl adds TLS (encrypted connections). wrapper.sh turns it on
+# when the deployment passes a certificate (scripts/deploy.sh does by default).
 RUN set -eu; \
     cd /usr/src/postgresql; \
     git apply /tmp/allow-root.patch; \
@@ -106,6 +107,7 @@ RUN set -eu; \
         --with-libxslt \
         --without-zlib \
         --with-lz4 \
+        --with-ssl=openssl \
     ; \
     make -j "$(nproc)" world-bin; \
     make install-world-bin DESTDIR=/usr/src/postgresql/dist; \
@@ -138,6 +140,7 @@ RUN apk add --no-cache \
         icu-libs \
         bash \
         libedit \
+        libssl3 \
     ;
 
 ##

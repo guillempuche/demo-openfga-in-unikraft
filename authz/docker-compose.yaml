@@ -1,24 +1,73 @@
+# Local OpenFGA stack, with TLS on both private hops as deployed:
+#   ./scripts/tls.sh   # once: the certificates in .cache/tls
+#   docker compose -f authz/docker-compose.yaml --env-file authz/.env up -d
+# OpenFGA serves HTTPS and gRPC over TLS and reaches PostgreSQL with its
+# certificate verified, under the deployment's private names
+# (demo-fga-openfga.internal, demo-fga-postgres.internal). Caddy is the way in
+# from this machine: plain HTTP on localhost:8080 (loopback only, so nothing
+# unencrypted leaves the machine), TLS from Caddy to OpenFGA.
 name: demo-openfga-ft-unikraft
 
 services:
+  # Copies the certificates into a volume, each private key owned by the one
+  # service that uses it and readable by it alone (0600), as a Kubernetes
+  # secret volume would: files mounted straight from the host keep the host's
+  # owner, which neither PostgreSQL nor OpenFGA runs as.
+  tls-files:
+    image: busybox:1.38.0-musl
+    volumes:
+      - ${TLS_DIR:-../.cache/tls}:/src:ro
+      - tls:/tls
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        [ -f /src/ca.crt ] || { echo "no certificates in ${TLS_DIR:-.cache/tls}: run ./scripts/tls.sh" >&2; exit 1; }
+        install -m 644 /src/ca.crt /src/postgres.crt /src/openfga.crt /tls/
+        install -m 600 -o 70 /src/postgres.key /tls/        # postgres (uid 70)
+        install -m 600 -o 65532 /src/openfga.key /tls/      # openfga (uid 65532)
+
   postgres:
+    depends_on:
+      tls-files:
+        condition: service_completed_successfully
     image: postgres:17.7-alpine3.21
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_USER=${POSTGRES_USER}
       - PGPORT=${POSTGRES_PORT}
+    # TLS 1.3 only, no unencrypted network connections (pg_hba_tls.conf, the
+    # unikernel image's rules). From this machine: psql "host=localhost
+    # port=5435 sslmode=require ...", or sslmode=verify-full with
+    # host=demo-fga-postgres.internal hostaddr=127.0.0.1 sslrootcert=.cache/tls/ca.crt.
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tls/postgres.crt
+      - -c
+      - ssl_key_file=/tls/postgres.key
+      - -c
+      - ssl_min_protocol_version=TLSv1.3
+      - -c
+      - hba_file=/etc/postgresql/pg_hba_tls.conf
     ports:
-      - ${POSTGRES_PORT}:${POSTGRES_PORT}
+      - 127.0.0.1:${POSTGRES_PORT}:${POSTGRES_PORT}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - tls:/tls:ro
+      - ../infrastructure/unikraft/postgres/fs/etc/postgresql/pg_hba_tls.conf:/etc/postgresql/pg_hba_tls.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 5s
       retries: 5
     networks:
-      - demo_authz_network
+      demo_authz_network:
+        aliases: [demo-fga-postgres.internal]
 
   migrate:
     depends_on:
@@ -28,8 +77,10 @@ services:
     command: migrate
     environment: # Full list https://github.com/openfga/openfga/blob/main/cmd/migrate/flags.go
       - OPENFGA_DATASTORE_ENGINE=postgres
-      - OPENFGA_DATASTORE_URI=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+      - OPENFGA_DATASTORE_URI=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@demo-fga-postgres.internal:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=verify-full&sslrootcert=/tls/ca.crt
       - OPENFGA_VERBOSE=true
+    volumes:
+      - tls:/tls:ro
     networks:
       - demo_authz_network
 
@@ -42,24 +93,33 @@ services:
       - OPENFGA_AUTHN_METHOD=preshared
       - OPENFGA_AUTHN_PRESHARED_KEYS=${OPENFGA_AUTHN_PRESHARED_KEYS}
       - OPENFGA_DATASTORE_ENGINE=postgres
-      - OPENFGA_DATASTORE_URI=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+      - OPENFGA_DATASTORE_URI=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@demo-fga-postgres.internal:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=verify-full&sslrootcert=/tls/ca.crt
       - OPENFGA_HTTP_CORS_ALLOWED_ORIGINS=*
       - OPENFGA_HTTP_CORS_ALLOWED_HEADERS=Content-Type,Authorization
-      - OPENFGA_HTTP_TLS_ENABLED=false
+      - OPENFGA_HTTP_TLS_ENABLED=true
+      - OPENFGA_HTTP_TLS_CERT=/tls/openfga.crt
+      - OPENFGA_HTTP_TLS_KEY=/tls/openfga.key
+      - OPENFGA_GRPC_TLS_ENABLED=true
+      - OPENFGA_GRPC_TLS_CERT=/tls/openfga.crt
+      - OPENFGA_GRPC_TLS_KEY=/tls/openfga.key
       - OPENFGA_LOG_FORMAT=json
       - OPENFGA_LOG_LEVEL=debug
     command: run
+    volumes:
+      - tls:/tls:ro
     healthcheck:
       # grpc_health_probe ships in the official image. The gRPC health service
-      # needs no preshared key and reports SERVING once the datastore is ready.
-      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+      # needs no preshared key and reports SERVING once the datastore is ready;
+      # it checks the certificate like any client.
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081", "-tls", "-tls-ca-cert=/tls/ca.crt", "-tls-server-name=localhost"]
       interval: 5s
       timeout: 5s
       retries: 3
       start_period: 30s
       start_interval: 1s
     networks:
-      - demo_authz_network
+      demo_authz_network:
+        aliases: [demo-fga-openfga.internal]
 
   # Optional: `docker compose --profile playground up -d`. Since OpenFGA v1.14
   # the (deprecated) Playground only works with authn method `none`, so it runs
@@ -75,12 +135,16 @@ services:
     environment:
       - OPENFGA_AUTHN_METHOD=none
       - OPENFGA_DATASTORE_ENGINE=postgres
-      - OPENFGA_DATASTORE_URI=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+      - OPENFGA_DATASTORE_URI=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@demo-fga-postgres.internal:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=verify-full&sslrootcert=/tls/ca.crt
       - OPENFGA_HTTP_ADDR=0.0.0.0:8090
       - OPENFGA_PLAYGROUND_ENABLED=true
       - OPENFGA_PLAYGROUND_ADDR=0.0.0.0:3000
       - OPENFGA_LOG_FORMAT=json
     command: run
+    # The datastore connection uses TLS; the Playground's own API stays plain
+    # HTTP on this machine's loopback, which the browser page calls.
+    volumes:
+      - tls:/tls:ro
     healthcheck:
       # grpc_health_probe ships in the official image. The gRPC health service
       # needs no preshared key and reports SERVING once the datastore is ready.
@@ -102,9 +166,10 @@ services:
       openfga:
         condition: service_healthy
     ports:
-      - "8080:8080"  # OpenFGA API (preshared key)
+      - "127.0.0.1:8080:8080"  # OpenFGA API (preshared key), loopback only
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - tls:/tls:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -114,6 +179,8 @@ services:
 volumes:
   postgres_data:
     name: demo_authz_postgres_data
+  tls:
+    name: demo_authz_tls
   caddy_data:
     name: demo_authz_caddy_data
   caddy_config:

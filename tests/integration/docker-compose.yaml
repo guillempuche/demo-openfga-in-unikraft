@@ -1,17 +1,66 @@
 # Throwaway OpenFGA for the integration suite (CI and local runs).
+#   ./scripts/tls.sh   # once: the certificates in .cache/tls
 #   docker compose -f tests/integration/docker-compose.yaml up -d --wait
 # Same OpenFGA version as the deployment (versions.env), PostgreSQL 16 like the
 # Unikraft instance, data on tmpfs. Experimental features are on so the suite
 # can cover them as a separate tier.
+#
+# TLS on both hops, as deployed: OpenFGA serves HTTPS and gRPC over TLS, and
+# reaches PostgreSQL (under its private name, demo-fga-postgres.internal) with
+# its certificate verified. Unlike the unikernels, which get certificates as
+# environment variables, these official images read them from files, the way
+# Kubernetes or Docker secrets deliver them.
 name: demo-fga-integration
 
 services:
+  # Copies the certificates into a volume, each private key owned by the one
+  # service that uses it and readable by it alone (0600), as a Kubernetes
+  # secret volume would: files mounted straight from the host keep the host's
+  # owner, which neither PostgreSQL nor OpenFGA runs as.
+  tls-files:
+    image: busybox:1.38.0-musl
+    volumes:
+      - ${TLS_DIR:-../../.cache/tls}:/src:ro
+      - tls:/tls
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        [ -f /src/ca.crt ] || { echo "no certificates in ${TLS_DIR:-.cache/tls}: run ./scripts/tls.sh" >&2; exit 1; }
+        install -m 644 /src/ca.crt /src/postgres.crt /src/openfga.crt /tls/
+        install -m 600 -o 70 /src/postgres.key /tls/        # postgres (uid 70)
+        install -m 600 -o 65532 /src/openfga.key /tls/      # openfga (uid 65532)
+
   postgres:
+    depends_on:
+      tls-files:
+        condition: service_completed_successfully
     image: postgres:16-alpine
+    networks:
+      default:
+        aliases: [demo-fga-postgres.internal]
     environment:
       - POSTGRES_USER=openfga
       - POSTGRES_PASSWORD=integration
       - POSTGRES_DB=openfga
+    # The unikernel image's TLS settings: TLS 1.3 only, no unencrypted
+    # network connections (pg_hba_tls.conf).
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tls/postgres.crt
+      - -c
+      - ssl_key_file=/tls/postgres.key
+      - -c
+      - ssl_min_protocol_version=TLSv1.3
+      - -c
+      - hba_file=/etc/postgresql/pg_hba_tls.conf
+    volumes:
+      - tls:/tls:ro
+      - ../../infrastructure/unikraft/postgres/fs/etc/postgresql/pg_hba_tls.conf:/etc/postgresql/pg_hba_tls.conf:ro
     tmpfs:
       - /var/lib/postgresql/data
     healthcheck:
@@ -28,7 +77,9 @@ services:
     command: migrate
     environment:
       - OPENFGA_DATASTORE_ENGINE=postgres
-      - OPENFGA_DATASTORE_URI=postgres://openfga:integration@postgres:5432/openfga?sslmode=disable
+      - OPENFGA_DATASTORE_URI=postgres://openfga:integration@demo-fga-postgres.internal:5432/openfga?sslmode=verify-full&sslrootcert=/tls/ca.crt
+    volumes:
+      - tls:/tls:ro
 
   openfga:
     depends_on:
@@ -38,9 +89,15 @@ services:
     command: run
     environment:
       - OPENFGA_DATASTORE_ENGINE=postgres
-      - OPENFGA_DATASTORE_URI=postgres://openfga:integration@postgres:5432/openfga?sslmode=disable
+      - OPENFGA_DATASTORE_URI=postgres://openfga:integration@demo-fga-postgres.internal:5432/openfga?sslmode=verify-full&sslrootcert=/tls/ca.crt
       - OPENFGA_AUTHN_METHOD=preshared
       - OPENFGA_AUTHN_PRESHARED_KEYS=integration-key
+      - OPENFGA_HTTP_TLS_ENABLED=true
+      - OPENFGA_HTTP_TLS_CERT=/tls/openfga.crt
+      - OPENFGA_HTTP_TLS_KEY=/tls/openfga.key
+      - OPENFGA_GRPC_TLS_ENABLED=true
+      - OPENFGA_GRPC_TLS_CERT=/tls/openfga.crt
+      - OPENFGA_GRPC_TLS_KEY=/tls/openfga.key
       # Same as the deployment: makes MINIMIZE_LATENCY and HIGHER_CONSISTENCY differ.
       - OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
       # Lower than the default (1000) so the suite can reach the truncation of
@@ -49,18 +106,24 @@ services:
       - OPENFGA_LIST_OBJECTS_MAX_RESULTS=100
       - OPENFGA_LIST_USERS_MAX_RESULTS=100
       - OPENFGA_EXPERIMENTALS=authzen,inline_expressions
-      - OPENFGA_AUTHZEN_BASE_URL=http://127.0.0.1:28080
+      - OPENFGA_AUTHZEN_BASE_URL=https://127.0.0.1:28080
       - OPENFGA_LOG_FORMAT=json
+    volumes:
+      - tls:/tls:ro
     healthcheck:
       # grpc_health_probe ships in the official image. The gRPC health service
-      # needs no preshared key and reports SERVING once the datastore is ready.
-      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+      # needs no preshared key and reports SERVING once the datastore is ready;
+      # it checks the certificate like any client.
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081", "-tls", "-tls-ca-cert=/tls/ca.crt", "-tls-server-name=localhost"]
       interval: 5s
       timeout: 5s
       retries: 3
       start_period: 30s
       start_interval: 1s
     ports:
-      - "127.0.0.1:28080:8080" # HTTP
-      - "127.0.0.1:28081:8081" # gRPC
-      - "127.0.0.1:22112:2112" # Prometheus metrics
+      - "127.0.0.1:28080:8080" # HTTP over TLS
+      - "127.0.0.1:28081:8081" # gRPC over TLS
+      - "127.0.0.1:22112:2112" # Prometheus metrics (plain HTTP: OpenFGA has no TLS for it)
+
+volumes:
+  tls:

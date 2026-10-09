@@ -273,6 +273,31 @@ The deployment uses scale-to-zero. Checks answered from OpenFGA's 10 s check cac
 - **Tunnel connections.** Three remote runs had 117, 131 and 132 of 138–139 tests passing. The failures were 10 s client timeouts and `ECONNRESET`, on different tests each time. OpenFGA's own log showed all 986 requests answered, the slowest in 976 ms (gRPC reflection), with only the response codes the tests expect. With one connection per request instead of kept-alive ones, two runs in a row passed 138/138 with no timeouts.
 - **ReadChanges clocks.** A cutoff 1 ms after a change's `timestamp` still returned that change. OpenFGA converts `start_time` to a ULID with its own clock and filters on the changes' ULIDs, but `timestamp` is Postgres's `inserted_at` (`docs/repos/openfga/pkg/server/commands/read_changes.go`, `pkg/storage/postgres/postgres.go`), and the two run on different machines here. The test now takes the cutoff from OpenFGA's `Date` header.
 
+## TLS on both private hops (2026-10-08)
+
+The API reaches OpenFGA over HTTPS and OpenFGA reaches PostgreSQL with `sslmode=verify-full`, each checking the server's certificate against a private CA (`scripts/tls.sh`). Deployed with `deploy.sh` on the existing volume (data written by PostgreSQL 16.4, now served by the 16.14 image built with OpenSSL), then checked with `check-tls.sh`, `verify.sh`, `check-e2e.sh`, `test-remote.sh` and `test-integration-remote.sh`.
+
+Before building on it, a throwaway `demo-fga-tls-probe` instance (deleted after, with its image) answered the one open question: OpenFGA watches its certificate files with inotify, and would stop at startup without it. On Unikraft base-compat it started with HTTP TLS on (`Initial TLS certificate loaded`, `Starting certificate watcher...`); a multi-line PEM passed as an environment variable arrived intact, and `/tmp` kept 0600. Through a tunnel: TLS 1.3 with the CA verified, refused without the CA, plain HTTP 400.
+
+| Check | Result |
+| --- | --- |
+| Certificates before deploying (`check-certificates.mjs`) | CA, `postgres.crt` and `openfga.crt`: chain, key and hostname OK, 364 days left |
+| Migration over `verify-full` | Exit 0 on the first attempt (schema version 6, nothing to migrate) |
+| OpenFGA HTTP API (`check-tls.sh`) | Certificate verified for `demo-fga-openfga.internal`, TLS 1.3; plain HTTP answers 400 |
+| OpenFGA gRPC | Certificate verified, TLS 1.3, ALPN `h2` |
+| PostgreSQL | Certificate verified for `demo-fga-postgres.internal` (STARTTLS), TLS 1.3; an unencrypted client gets "no encryption" |
+| OpenFGA's connections to PostgreSQL | 1 of 1 encrypted, TLS 1.3 (`pg_stat_ssl`) |
+| API → OpenFGA | `/health` reports OpenFGA `ok`, which with plain text refused can only be over TLS |
+| `verify.sh` | All checks passed (exposure, pinned digests, restart policy, service group, `.internal` = private IP) |
+| `/bench` p50 (3 runs, n=100) | 1.214 / 0.925 / 0.901 ms (plain text on 2026-10-06: 1.083 / 0.931 / 0.761 ms): kept-alive connections pay the TLS handshake once |
+| Data across the change | `check-e2e.sh`: store, model and tuples match the run of 2026-10-06; write through the tunnel → API → delete passed |
+| `fga model test` remote | All test files passed (`test-remote.sh` exit 0), through the tunnel's local TLS client |
+| Integration suite remote | 138/138 through the tunnel's local TLS client; API gate 19/19 core RPCs (AuthZEN excluded: experimental tier off). A first run stopped when one tunnel's control connection to the relay broke on this machine's VPN (`control relay … broken pipe`, as in the README); its relay was cleaned up, and the script now says when the tunnel is down instead of exiting silently |
+| Memory | OpenFGA 20.2 MiB RSS (17.6 MiB in plain text), API 25.1 MiB RSS |
+| Tunnel ports | All on `127.0.0.1`: the tunnels' TLS ports (19080, 19081) and `tls-forward.mjs`'s plain ports (18080, 18081) |
+
+Locally and in CI: `check-tls-chain.sh` 11/11 (the API and OpenFGA images under the private names), `check-postgres-image.sh` with and without TLS, the integration suite 151/151 and the API coverage gate (25 RPCs) over TLS, 27/27 API integration tests and 161/161 API tests including the TLS cases.
+
 ## Build notes
 
 - Building OpenFGA from its Kraftfile failed with `dockerfile context does not exist` until the `rootfs` path was fixed.

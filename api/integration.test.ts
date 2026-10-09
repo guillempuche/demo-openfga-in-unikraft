@@ -13,6 +13,7 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { after, before, describe, it } from 'node:test'
@@ -21,7 +22,13 @@ import { CredentialsMethod, OpenFgaClient, type ClientWriteRequest } from '@open
 
 const BUNDLE = fileURLToPath(new URL('./dist/server.mjs', import.meta.url))
 const MANIFEST = fileURLToPath(new URL('../authz/models/fga.mod', import.meta.url))
-const OPENFGA_URL = process.env.FGA_API_URL ?? 'http://127.0.0.1:28080'
+const OPENFGA_URL = process.env.FGA_API_URL ?? 'https://127.0.0.1:28080'
+// Over https the API under test gets the stack's CA as deploy.sh gives it to
+// the instance (TLS_CA_PEM); `npm run test:integration` points
+// NODE_EXTRA_CA_CERTS at the same file for this test's own SDK client.
+const TLS_CA_PEM = OPENFGA_URL.startsWith('https:')
+  ? readFileSync(process.env.TLS_CA_FILE ?? fileURLToPath(new URL('../.cache/tls/ca.crt', import.meta.url)), 'utf8')
+  : undefined
 const OPENFGA_TOKEN = process.env.FGA_API_TOKEN ?? 'integration-key'
 // Well-formed ids that no store or model has.
 const MISSING_STORE = '01HX0000000000000000000000'
@@ -78,6 +85,7 @@ async function startApi(storeId: string, env: Record<string, string> = {}): Prom
       PATH: process.env.PATH,
       PORT: String(port),
       FGA_API_URL: OPENFGA_URL,
+      ...(TLS_CA_PEM ? { TLS_CA_PEM } : {}),
       FGA_KEY: OPENFGA_TOKEN,
       FGA_STORE_ID: storeId,
       FGA_STORE_NAME: `it-api-unused-${Date.now()}`,

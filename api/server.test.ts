@@ -10,13 +10,18 @@
 // its scenario once in a `before` hook and asserts on the recorded outcome.
 
 import assert from 'node:assert/strict'
-import { spawn, type ChildProcess } from 'node:child_process'
-import { createServer, get as httpGet, type Server } from 'node:http'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createServer, get as httpGet, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
 import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { after, before, beforeEach, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const BUNDLE = fileURLToPath(new URL('./dist/server.mjs', import.meta.url))
+const TLS_SCRIPT = fileURLToPath(new URL('../scripts/tls.sh', import.meta.url))
 const KEY = 'test-key-that-must-not-be-logged'
 
 // The SDK only accepts ULIDs as store and model ids.
@@ -117,7 +122,7 @@ function defaultReply(req: Received): Reply {
 // Open TCP connections from the API, to check that idle ones get closed.
 let openConnections = 0
 
-const openfga: Server = createServer(async (req, res) => {
+async function handleOpenFga(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? '/', 'http://stub')
   let raw = ''
   for await (const chunk of req) raw += chunk
@@ -143,7 +148,9 @@ const openfga: Server = createServer(async (req, res) => {
   }
   res.writeHead(reply.status, { 'content-type': 'application/json' })
   res.end(reply.body)
-})
+}
+
+const openfga: Server = createServer(handleOpenFga)
 openfga.keepAliveTimeout = 60_000 // only the API may close idle connections
 openfga.on('connection', (socket) => {
   openConnections++
@@ -1683,6 +1690,86 @@ describe('routing', () => {
   })
 })
 
+// --- TLS to OpenFGA ----------------------------------------------------------
+
+// The stub served over HTTPS, as OpenFGA is when deployed, with a certificate
+// from scripts/tls.sh (valid for 127.0.0.1) signed by a fresh private CA.
+describe('TLS to OpenFGA', () => {
+  const dirs: string[] = []
+  let ownCa = ''
+  let otherCa = ''
+  let httpsUrl = ''
+  const https = { close: () => {} }
+
+  /** Runs scripts/tls.sh into a new temp dir: a CA and its server certificates. */
+  const issue = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'api-tls-'))
+    dirs.push(dir)
+    execFileSync(TLS_SCRIPT, ['--out', dir], { stdio: 'ignore' })
+    return dir
+  }
+
+  before(async () => {
+    const signed = issue()
+    ownCa = readFileSync(join(signed, 'ca.crt'), 'utf8')
+    otherCa = readFileSync(join(issue(), 'ca.crt'), 'utf8')
+    const server = createHttpsServer(
+      { cert: readFileSync(join(signed, 'openfga.crt')), key: readFileSync(join(signed, 'openfga.key')) },
+      handleOpenFga,
+    )
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    https.close = () => server.close()
+    httpsUrl = `https://127.0.0.1:${(server.address() as AddressInfo).port}`
+  })
+
+  after(() => {
+    https.close()
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+  })
+
+  describe('when TLS_CA_PEM is the CA that signed its certificate', () => {
+    it('should report openfga "ok" and answer checks', async () => {
+      await withFreshApi({ FGA_API_URL: httpsUrl, TLS_CA_PEM: ownCa }, async (fresh) => {
+        // GIVEN an API that trusts the stub's CA
+        // WHEN asking for health and checking a tuple
+        const health = await get('/health', fresh)
+        const check = await get(CHECK, fresh)
+        // THEN both reach OpenFGA over TLS
+        assert.equal(health.body.openfga, 'ok')
+        assert.equal(check.status, 200)
+        assert.equal(check.body.allowed, true)
+      })
+    })
+  })
+
+  describe('when TLS_CA_PEM is another CA', () => {
+    it('should refuse the certificate: health unreachable, checks 502', async () => {
+      await withFreshApi({ FGA_API_URL: httpsUrl, TLS_CA_PEM: otherCa }, async (fresh) => {
+        // GIVEN an API that trusts an unrelated CA
+        // WHEN asking for health and checking a tuple
+        const health = await get('/health', fresh)
+        const check = await get(CHECK, fresh)
+        // THEN the certificate is rejected and no call gets through
+        assert.match(health.body.openfga, /^unreachable: .*certificate/)
+        assert.equal(check.status, 502)
+        assert.equal(calls('check').length, 0)
+      })
+    })
+  })
+
+  describe('when TLS_CA_PEM is not set', () => {
+    it('should not trust a private CA', async () => {
+      await withFreshApi({ FGA_API_URL: httpsUrl }, async (fresh) => {
+        // GIVEN an API that trusts only the system's public CAs
+        // WHEN asking for health
+        const { body } = await get('/health', fresh)
+        // THEN the stub's private certificate is rejected
+        assert.match(body.openfga, /^unreachable: .*certificate/)
+      })
+    })
+  })
+})
+
 // --- startup and configuration ----------------------------------------------
 
 describe('startup', () => {
@@ -1693,6 +1780,7 @@ describe('startup', () => {
       ['PORT is not a number', { PORT: 'abc' }, 'PORT'],
       ['PORT is out of range', { PORT: '70000' }, 'PORT'],
       ['FGA_API_URL is not a URL', { FGA_API_URL: 'not-a-url' }, 'FGA_API_URL'],
+      ['TLS_CA_PEM is not a certificate', { TLS_CA_PEM: 'not a certificate' }, 'TLS_CA_PEM'],
       ['FGA_STORE_ID is not a ULID', { FGA_STORE_ID: 'demo-fga' }, 'FGA_STORE_ID'],
       ['FGA_STORE_ID is a lowercase ULID', { FGA_STORE_ID: STORE_1.toLowerCase() }, 'FGA_STORE_ID'],
       ['FGA_STORE_CACHE_TTL is not a duration', { FGA_STORE_CACHE_TTL: 'soon' }, 'FGA_STORE_CACHE_TTL'],

@@ -58,6 +58,7 @@ jobs:
       - run: ./scripts/check-versions.sh
       - run: ./scripts/check-kraftfiles.sh
       - run: shellcheck -x -S warning scripts/*.sh scripts/env.sh
+      - run: shellcheck -s sh -S warning infrastructure/unikraft/openfga/entrypoint.sh
       - run: docker compose -f authz/docker-compose.yaml --env-file authz/.env.example config --quiet
 
   integration:
@@ -77,8 +78,10 @@ jobs:
         run: |
           curl -fsSL "https://github.com/openfga/cli/releases/download/v${FGA_VERSION}/fga_${FGA_VERSION}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin fga
           curl -fsSL "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz" | tar -xz -C /usr/local/bin grpcurl
-      - name: Start OpenFGA (v1.21.0, PostgreSQL 16, experimental tier on)
-        run: docker compose -f tests/integration/docker-compose.yaml up -d --wait
+      - name: Start OpenFGA (v1.21.0, PostgreSQL 16, TLS on both hops, experimental tier on)
+        run: |
+          ./scripts/tls.sh
+          docker compose -f tests/integration/docker-compose.yaml up -d --wait
       - run: npm ci
         working-directory: tests/integration
       - run: npm run typecheck
@@ -106,6 +109,15 @@ jobs:
         run: |
           . ./versions.env
           docker run --rm --entrypoint /usr/bin/openfga demo-fga-openfga-rootfs version 2>&1 | tee /dev/stderr | grep -F "\`$OPENFGA_VERSION\`"
+
+  tls-chain:
+    name: API, OpenFGA and PostgreSQL talk over verified TLS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The API and OpenFGA images that ship, under the instances' private
+      # names, with TLS on both hops; the script lists what it checks.
+      - run: ./scripts/check-tls-chain.sh
 
   api-image:
     name: API rootfs builds and starts
