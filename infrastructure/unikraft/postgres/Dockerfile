@@ -60,14 +60,6 @@ RUN apk add --no-cache --virtual .build-deps \
         icu-dev \
     ;
 
-# The upstream example hides OpenSSL during the build (it doesn't say why;
-# this PostgreSQL is built without TLS, as it only listens on the private
-# network). Alpine 3.20 keeps the library in /lib, newer releases in /usr/lib,
-# so look in both and move the real file, not a symlink to it.
-RUN for lib in /lib/libssl.so.3 /usr/lib/libssl.so.3; do \
-        if [ -e "$lib" ] && [ ! -L "$lib" ]; then mv "$lib" "$lib.orig"; fi; \
-    done
-
 # Download the sources; the next step checks them before anything is unpacked.
 ADD https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.bz2 /tmp/postgresql.tar.bz2
 ADD https://github.com/unikraft-cloud/pg_ukc_scaletozero/archive/${PG_UKC_SCALETOZERO_COMMIT}.tar.gz /tmp/pg_ukc_scaletozero.tar.gz
@@ -91,6 +83,8 @@ RUN set -eu; \
 # which the later stages copy from. The plain `make install` also installs
 # PostgreSQL in this stage's /usr/local, where the extension build below finds
 # it.
+# There is no --with-ssl, so the server has no TLS (encrypted connections):
+# OpenFGA reaches it only over Unikraft's private network (scripts/deploy.sh).
 RUN set -eu; \
     cd /usr/src/postgresql; \
     git apply /tmp/allow-root.patch; \
@@ -127,8 +121,9 @@ RUN set -eu; \
     make install DESTDIR=/usr/src/postgresql/dist
 
 ##
-## Stage 2: the run-time libraries, installed as Alpine packages. Only the
-## files PostgreSQL actually uses are copied out of this stage (stage 3).
+## Stage 2: the packages that provide the libraries PostgreSQL, its modules
+## and bash load, and tzdata (time zones). Stage 3 copies out only the files
+## actually used, and fails the build if one is missing.
 ##
 FROM base AS base-deps
 
@@ -143,12 +138,6 @@ RUN apk add --no-cache \
         icu-libs \
         bash \
         libedit \
-        openssl \
-        krb5-libs \
-        libldap \
-        cyrus-sasl \
-        libcom_err \
-        keyutils-libs \
     ;
 
 ##
@@ -212,9 +201,11 @@ RUN set -eu; \
 
 ##
 ## Stage 4: the image the unikernel boots. busybox provides the small shell and
-## core commands wrapper.sh uses; the rest is the rootfs collected above.
+## core commands wrapper.sh uses; the rest is the rootfs collected above. The
+## musl variant is a single static program, so the image has one C library
+## (Alpine's musl); the default variant adds glibc's files, which nothing uses.
 ##
-FROM busybox:1.38.0@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+FROM busybox:1.38.0-musl@sha256:ea2b9914a16a4ac1981994af97b318f7c7d4db76b580c56177f08bf76f4a0be8
 
 # wrapper.sh reads the PostgreSQL version from the environment. ARG brings in
 # the value from the top of the file (see stage 1); ENV keeps it in the image,
