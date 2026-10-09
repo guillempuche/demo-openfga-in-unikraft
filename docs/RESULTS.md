@@ -298,6 +298,19 @@ Before building on it, a throwaway `demo-fga-tls-probe` instance (deleted after,
 
 Locally and in CI: `check-tls-chain.sh` 11/11 (the API and OpenFGA images under the private names), `check-postgres-image.sh` with and without TLS, the integration suite 151/151 and the API coverage gate (25 RPCs) over TLS, 27/27 API integration tests and 161/161 API tests including the TLS cases.
 
+### Alpine 3.24, and the wake-up paths with TLS (2026-10-09)
+
+Redeployed with the PostgreSQL image rebuilt on Alpine 3.24 (#4; digest `f42e7045…`), then measured the two paths that open new TLS connections: the API waking from standby, and OpenFGA reconnecting to a PostgreSQL that scaled to zero.
+
+| Check | Result |
+| --- | --- |
+| `check-tls.sh`, `verify.sh` | All checks passed; migration exit 0 on the first attempt |
+| `/bench` p50 (3 runs, n=100) | 1.120 / 0.875 / 0.928 ms |
+| API wake from standby (`measure-wake.sh`, 10 runs) | p50 0.716 s from standby vs 0.479 s running (+0.24 s; +0.21–0.22 s in plain text) |
+| First uncached check after PostgreSQL standby (3 rounds, standby after 102–119 s of quiet) | 122.2 / 121.6 / 119.6 ms (plain text: 80.9–83.4 ms); the next checks 7.2–9.0 ms |
+
+The ~38 ms added after a PostgreSQL wake-up is the TLS handshake on the fresh connection OpenFGA opens (plus SCRAM authentication, as before). Keeping one connection open would avoid it but would also keep PostgreSQL from ever scaling to zero (see "Postgres scale-to-zero" above). Checks answered from OpenFGA's check cache, and every check while the pool is warm, don't pay it.
+
 ## Build notes
 
 - Building OpenFGA from its Kraftfile failed with `dockerfile context does not exist` until the `rootfs` path was fixed.

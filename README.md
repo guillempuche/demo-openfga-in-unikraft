@@ -10,10 +10,10 @@ Example deployment of [OpenFGA](https://openfga.dev) (Zanzibar-style, fine-grain
 | What | Result ([details](docs/RESULTS.md)) |
 | --- | --- |
 | API → OpenFGA over `.internal`, warm check | p50 0.76–1.08 ms (Effect API, OpenFGA official binary), 100 sequential checks |
-| Postgres scale-to-zero | Standby after ~90 s of quiet; the first uncached check then takes ~82 ms, the next 7–8 ms |
+| Postgres scale-to-zero | Standby after ~90 s of quiet; the first uncached check then takes ~120 ms with TLS (~82 ms in plain text), the next 7–9 ms |
 | Public URL across a full redeploy | Unchanged (persistent service group) |
 | Write through the tunnel → public API sees it → delete → API sees that | ✅ before and after a full redeploy; store, model and tuples unchanged |
-| API woken from scale-to-zero standby | p50 +0.21 s over a running instance (10 runs) |
+| API woken from scale-to-zero standby | p50 +0.24 s over a running instance with TLS (+0.21 s in plain text; 10 runs) |
 | Same, OpenFGA check cache off (1 Postgres round trip) | p50 1.5–1.8 ms |
 | Exposure | No service on OpenFGA or Postgres; ports 8080/8081/3000/2112/5432 don't answer; no key → `401` |
 | TLS on the private hops | API → OpenFGA HTTPS and gRPC, OpenFGA → Postgres `verify-full`: TLS 1.3, certificates verified by name, plain text refused on both; `/bench` p50 0.90–1.21 ms with TLS |
