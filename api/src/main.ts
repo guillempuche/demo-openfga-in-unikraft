@@ -11,7 +11,7 @@
 // Built with Effect 4 (HttpApi, typed config and errors) and the official
 // OpenFGA SDK. Bundled into one file for the unikernel image (npm run build).
 
-import { createServer } from 'node:http'
+import { createServer, ServerResponse } from 'node:http'
 import * as NodeHttpServer from '@effect/platform-node/NodeHttpServer'
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import { Cause, Context, Effect, ErrorReporter, Layer, Logger, Option } from 'effect'
@@ -72,11 +72,35 @@ const DefectLogLive = ErrorReporter.layer([
   }),
 ])
 
+// A clean, quick shutdown. On SIGTERM, Effect stops the server with Node's
+// server.close(): it takes no new connections, closes the idle ones and waits
+// for the rest. A connection still answering a request would stay open after
+// that answer (keep-alive: the client may send another request on it), so the
+// process would wait until the client or Node's keep-alive timeout (5 s, plus
+// 1 s) closed it, and a request sent on it meanwhile would get no answer: Effect
+// has already stopped handling new requests. Once the server has stopped
+// listening, every answer says `Connection: close` instead, and Node closes the
+// connection right after sending it. Requests already in flight still finish
+// (Go's http.Server.Shutdown does the same).
+const createHttpServer = () => {
+  const server = createServer({
+    ServerResponse: class extends ServerResponse {
+      // Every answer goes through writeHead, Effect's and Node's own. The loose
+      // types match both of its overloads: (status, headers) and (status, message, headers).
+      writeHead(statusCode: number, statusMessage?: any, headers?: any) {
+        if (!server.listening) this.setHeader('connection', 'close')
+        return super.writeHead(statusCode, statusMessage, headers)
+      }
+    },
+  })
+  return server
+}
+
 const ServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const { port, fgaApiUrl } = yield* AppConfig
     yield* Effect.logInfo(`demo-fga-api listening on :${port}, OpenFGA at ${fgaApiUrl.origin}`)
-    return NodeHttpServer.layer(createServer, { port, host: '0.0.0.0' })
+    return NodeHttpServer.layer(createHttpServer, { port, host: '0.0.0.0' })
   }),
 )
 

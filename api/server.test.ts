@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { createServer, get as httpGet, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { Agent, createServer, get as httpGet, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -1977,6 +1977,95 @@ describe('startup', () => {
         // THEN the check goes to that store
         assert.equal(calls('check')[0].storeId, OTHER)
       })
+    })
+  })
+})
+
+// --- shutdown --------------------------------------------------------------
+
+// Stopping the API means SIGTERM (`docker stop`, `kill`, stopApi). These tests
+// use a client that keeps its connection open after each answer (keep-alive),
+// as browsers and proxies do; fetch would close it on its own after a few
+// seconds, and so hide a shutdown that waits for the client.
+
+/** Stops the API with SIGTERM and returns how long it took to exit, in ms. */
+async function timeStop(target: Api): Promise<number> {
+  const started = performance.now()
+  await stopApi(target)
+  return performance.now() - started
+}
+
+type KeptAliveRes = { status: number; connection: string | undefined; body: any }
+
+/** A GET sent through `agent`, with the answer's Connection header. */
+const getKeptAlive = (target: Api, path: string, agent: Agent) =>
+  new Promise<KeptAliveRes>((resolve, reject) => {
+    httpGet(target.base + path, { agent }, (res) => {
+      let raw = ''
+      res.on('data', (chunk) => (raw += chunk))
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, connection: res.headers.connection, body: JSON.parse(raw) }))
+    }).on('error', reject)
+  })
+
+describe('shutdown', () => {
+  describe('when the API is stopped while idle', () => {
+    it('should exit within 1 s of SIGTERM', async () => {
+      const agent = new Agent({ keepAlive: true })
+      try {
+        await withFreshApi({}, async (fresh) => {
+          // GIVEN an API that answered a check, its client keeping the connection open
+          await getKeptAlive(fresh, CHECK, agent)
+          // WHEN it gets SIGTERM
+          const ms = await timeStop(fresh)
+          // THEN it exits at once
+          assert.ok(ms < 1000, `exit took ${Math.round(ms)} ms`)
+        })
+      } finally {
+        agent.destroy()
+      }
+    })
+  })
+
+  describe('when the API is stopped while a request is in flight', () => {
+    let res: KeptAliveRes
+    let exitMs = 0
+
+    before(async () => {
+      resetStub()
+      // GIVEN OpenFGA answers checks after 500 ms, and a client that keeps its connection open
+      stub.hooks.check = async () => {
+        await sleep(500)
+        return undefined
+      }
+      const agent = new Agent({ keepAlive: true })
+      try {
+        await withFreshApi({}, async (fresh) => {
+          const pending = getKeptAlive(fresh, CHECK, agent)
+          await until(() => calls('check').length > 0)
+          // WHEN it gets SIGTERM before OpenFGA has answered
+          exitMs = await timeStop(fresh)
+          // A dropped request rejects here, which fails every test below.
+          res = await pending
+        })
+      } finally {
+        agent.destroy()
+      }
+    })
+
+    it('should still answer the request', () => {
+      // THEN the client gets OpenFGA's decision
+      assert.equal(res.status, 200)
+      assert.equal(res.body.allowed, true)
+    })
+
+    it('should ask the client to close the connection', () => {
+      // THEN the answer says the connection won't take another request
+      assert.equal(res.connection, 'close')
+    })
+
+    it('should exit within 1 s of SIGTERM, without waiting for the client to close the connection', () => {
+      // THEN the API exits right after answering
+      assert.ok(exitMs < 1000, `exit took ${Math.round(exitMs)} ms`)
     })
   })
 })
