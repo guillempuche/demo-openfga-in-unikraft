@@ -2,32 +2,54 @@ name: Postgres image
 
 # Builds and tests the PostgreSQL image of the Unikraft deployment (the
 # database OpenFGA stores its data in). The image compiles PostgreSQL from
-# source, so this runs only when the image or its check changes; that includes
-# Renovate's updates of the Alpine base image, PostgreSQL and the extension.
+# source, so the build runs only when the image or its check changes; that
+# includes Renovate's updates of the Alpine base image, PostgreSQL and the
+# extension.
+#
+# The workflow itself runs on every pull request, so its check can be required
+# before merging into main: a workflow skipped by a `paths` filter never
+# reports, and GitHub would wait for it forever. When nothing relevant changed,
+# the build job is skipped, which GitHub counts as passing.
 on:
   push:
     branches: [main]
-    paths:
-      - infrastructure/unikraft/postgres/**
-      - scripts/check-postgres-image.sh
-      - .github/workflows/postgres-image.yml
   pull_request:
-    paths:
-      - infrastructure/unikraft/postgres/**
-      - scripts/check-postgres-image.sh
-      - .github/workflows/postgres-image.yml
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Postgres image inputs changed?
+    runs-on: ubuntu-latest
+    outputs:
+      postgres: ${{ steps.diff.outputs.postgres }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # Compare with the pull request's base, or with main before the push.
+      # When there's no base to compare with, build anyway.
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          inputs='^(infrastructure/unikraft/postgres/|scripts/(check-postgres-image|tls)\.sh$|\.github/workflows/postgres-image\.yml$)'
+          if ! changed="$(git diff --name-only "$BASE" HEAD 2>/dev/null)" || grep -qE "$inputs" <<<"$changed"; then
+            echo "postgres=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "postgres=false" >>"$GITHUB_OUTPUT"
+          fi
+
   postgres-image:
     name: Postgres rootfs builds, starts and serves queries
+    needs: changes
+    if: needs.changes.outputs.postgres == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Builds the image (verifying every pinned download and every shared
       # library), then starts it in Docker with the unikernel's command (the
-      # Kraftfile's cmd) and runs a few queries.
+      # Kraftfile's cmd) and runs a few queries, with and without TLS.
       - run: ./scripts/check-postgres-image.sh
