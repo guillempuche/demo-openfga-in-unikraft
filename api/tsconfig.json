@@ -16,6 +16,7 @@
   "include": [
     "src/*.ts",
     "server.test.ts",
-    "integration.test.ts"
+    "integration.test.ts",
+    "rolldown.config.ts"
   ]
 }

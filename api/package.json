@@ -6,7 +6,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node24 --minify --outfile=dist/server.mjs --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
+    "build": "rolldown -c",
     "start": "node src/main.ts",
     "test": "npm run build && node --test server.test.ts",
     "typecheck": "tsc --noEmit",
@@ -14,7 +14,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "esbuild": "0.28.2",
+    "rolldown": "1.2.12",
     "typescript": "^7.0.0"
   },
   "dependencies": {

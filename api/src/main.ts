@@ -17,8 +17,9 @@ import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import { Cause, Context, Effect, ErrorReporter, Layer, Logger, Option } from 'effect'
 import { HttpRouter, HttpServerRequest } from 'effect/http'
 import { HttpApiBuilder, HttpApiMiddleware } from 'effect/http-api'
-// A deep import: through the effect/http-api barrel, the bundle also keeps the
-// inlined Scalar build (~3 MB) that only HttpApiScalar.layer uses.
+// A deep import, so the bundle's size doesn't depend on the bundler dropping
+// the inlined Scalar build (~3 MB) that only HttpApiScalar.layer uses: through
+// the effect/http-api barrel, esbuild kept it (a 4.2 MB bundle).
 import { layerCdn as scalarDocs } from 'effect/http-api/HttpApiScalar'
 import { Api, JsonBodyOnly, RequestErrors } from './api.ts'
 import { AppConfig } from './config.ts'
