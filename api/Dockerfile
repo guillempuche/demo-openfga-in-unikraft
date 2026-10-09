@@ -8,7 +8,7 @@ FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:ebfe2f90462722a7a4de65e9199
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
-COPY tsconfig.json ./
+COPY tsconfig.json rolldown.config.ts ./
 COPY src ./src
 RUN npm run build
 

@@ -311,6 +311,8 @@ Redeployed with the PostgreSQL image rebuilt on Alpine 3.24 (#4; digest `f42e704
 
 The ~38 ms added after a PostgreSQL wake-up is the TLS handshake on the fresh connection OpenFGA opens (plus SCRAM authentication, as before). Keeping one connection open would avoid it but would also keep PostgreSQL from ever scaling to zero (see "Postgres scale-to-zero" above). Checks answered from OpenFGA's check cache, and every check while the pool is warm, don't pay it.
 
+Later the same day, the API bundled with Rolldown instead of esbuild (787 KB instead of 1,005 KB; locally, 99 ms instead of 126 ms from start to the first answer) and with the shutdown fix: `verify.sh` passed, `/bench` p50 1.101 / 0.877 / 0.856 ms, and two `measure-wake.sh` runs gave p50 0.733 s and 0.694 s from standby (0.716 s with esbuild that morning; fastest 0.610 s against 0.681 s). Over this machine's network the requests to an instance that was already running varied from 0.46 to 1.71 s, more than the 20–27 ms the smaller bundle saves, so the gain isn't visible from here; there is no regression.
+
 ## Build notes
 
 - Building OpenFGA from its Kraftfile failed with `dockerfile context does not exist` until the `rootfs` path was fixed.

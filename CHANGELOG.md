@@ -25,6 +25,7 @@ Notable changes to this example. Results behind each claim are in [docs/RESULTS.
 - Used Effect's schema-error hook (response bugs answer 500), a typed 415, `Cache`, `Semaphore` and JSON fatal logs.
 - Sent a trusted `current_time` and the client's `user_ip` with every check, so the model's conditions work through the API.
 - Added `/docs`, `FGA_MODEL_ID`, `CLIENT_IP_FROM`, `CURRENT_TIME_STEP` and `FGA_STORE_CACHE_TTL`.
+- Bundled the API with Rolldown instead of esbuild: 22% smaller (787 KB) and 20–27 ms faster to start; an import it can't resolve fails the build.
 - Exited right after the last in-flight answer on SIGTERM, instead of waiting 3–6 s for clients to close kept-alive connections: answers sent during shutdown carry `Connection: close`.
 
 ### Authorization model and tests
