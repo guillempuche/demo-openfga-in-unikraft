@@ -73,7 +73,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    image: openfga/openfga:v1.21.0
+    image: openfga/openfga:v1.22.0
     command: migrate
     environment: # Full list https://github.com/openfga/openfga/blob/main/cmd/migrate/flags.go
       - OPENFGA_DATASTORE_ENGINE=postgres
@@ -88,7 +88,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    image: openfga/openfga:v1.21.0
+    image: openfga/openfga:v1.22.0
     environment: # Full list https://github.com/openfga/openfga/blob/main/cmd/run/flags.go, https://github.com/openfga/openfga/blob/main/.config-schema.json
       - OPENFGA_AUTHN_METHOD=preshared
       - OPENFGA_AUTHN_PRESHARED_KEYS=${OPENFGA_AUTHN_PRESHARED_KEYS}
@@ -131,7 +131,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    image: openfga/openfga:v1.21.0
+    image: openfga/openfga:v1.22.0
     environment:
       - OPENFGA_AUTHN_METHOD=none
       - OPENFGA_DATASTORE_ENGINE=postgres
