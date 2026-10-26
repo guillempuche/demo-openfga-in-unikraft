@@ -18,7 +18,7 @@
         # deployed server (see versions.env; scripts/check-versions.sh checks
         # this version). nixpkgs' openfga-cli lags behind, and `fga model test`
         # runs that embedded engine.
-        fgaVersion = "0.8.1";
+        fgaVersion = "0.8.2";
         fgaRelease = {
           x86_64-linux = { asset = "linux_amd64"; sha256 = "e0414ad70850f8070540ad1be7a1e2e861edd6d6e73f6ed2b959c3277f98a54c"; };
           aarch64-linux = { asset = "linux_arm64"; sha256 = "6c530a0e50449b611b98f9cf66d6e33cf6533535c7f4b1055fdf0cd299d089d0"; };
