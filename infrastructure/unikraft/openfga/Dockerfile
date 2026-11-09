@@ -9,7 +9,7 @@ FROM --platform=linux/amd64 openfga/openfga:v1.21.0@sha256:2113c664a486b5da8d7a2
 # busybox's musl variant: one static program that gives entrypoint.sh a shell
 # (the OpenFGA image has none), to turn TLS certificates passed as environment
 # variables into the files OpenFGA reads.
-FROM --platform=linux/amd64 busybox:1.38.0-musl@sha256:ea2b9914a16a4ac1981994af97b318f7c7d4db76b580c56177f08bf76f4a0be8 AS busybox
+FROM --platform=linux/amd64 busybox:1.38.0-musl@sha256:80e38f9a1b39188b8bdb28879178edb322a4402b081a9aedda1924609decd6f6 AS busybox
 
 FROM scratch
 
