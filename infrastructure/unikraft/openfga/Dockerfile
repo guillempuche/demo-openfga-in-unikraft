@@ -4,7 +4,7 @@
 # multi-arch index digest, the one OpenFGA signs; --platform picks the amd64
 # binary for kraftcloud/x86_64. Keep the tag in sync with versions.env
 # (checked by scripts/check-versions.sh).
-FROM --platform=linux/amd64 openfga/openfga:v1.21.0@sha256:2113c664a486b5da8d7a2cdab479e0d4e30639c80fd2c000540f645c1dbc1e55 AS openfga
+FROM --platform=linux/amd64 openfga/openfga:v1.23.0@sha256:2a1b4ef95f2f27e6d420f11cf14390b4f537e699de8d18b6a07d8b355e11cf02 AS openfga
 
 # busybox's musl variant: one static program that gives entrypoint.sh a shell
 # (the OpenFGA image has none), to turn TLS certificates passed as environment
