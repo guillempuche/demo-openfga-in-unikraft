@@ -43,6 +43,16 @@ if [[ -f "$fp_file" ]]; then
 fi
 mkdir -p "$ROOT/.cache" && printf '%s\n' "$fingerprint" >"$fp_file"
 
+# --- OpenFGA itself refuses a call without the preshared key, or with a
+# wrong one (through the tunnel: nothing else reaches it)
+for key in "" "wrong-$RANDOM"; do
+  auth=()
+  [[ -n "$key" ]] && auth=(-H "Authorization: Bearer $key")
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${auth[@]}" "$FGA_API_URL/stores" || true)"
+  label="${key:+a wrong key}"
+  [[ "$code" == 401 ]] && pass "OpenFGA: ${label:-no key} gets 401" || fail "OpenFGA answered $code to ${label:-no key}"
+done
+
 # --- write -> API sees it -> delete -> API sees that
 id="e2e-$(date +%s)-$RANDOM"
 user="user:$id" object="project:$id"

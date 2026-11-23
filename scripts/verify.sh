@@ -52,8 +52,13 @@ expect "/list-objects?user=user:alice&relation=can_edit&type=project" '.objects 
 echo "--- /bench x3"
 for _ in 1 2 3; do expect /bench '.n == 100 and .allowed == true'; done
 
+# The private instances this deployment runs: no postgres instance when
+# OpenFGA's data lives in an external PostgreSQL.
+private=("$OPENFGA_NAME")
+external_datastore || private+=("$POSTGRES_NAME")
+
 echo "--- deployed images are pinned digests from the recorded builds"
-for name in "$POSTGRES_NAME" "$OPENFGA_NAME" "$API_NAME"; do
+for name in "${private[@]}" "$API_NAME"; do
   running="$(unikraft instances get "$name" -f image -o json | jq -r '.[0].image // empty')"
   recorded="$(awk -v r="$UNIKRAFT_ORG/$name" '$1 == r {print $1 "@" $2}' "$DIGESTS_FILE" 2>/dev/null || true)"
   if [[ "$running" != *@sha256:* ]]; then
@@ -73,7 +78,7 @@ if [[ "$(jq -r '.service.name // ""' <<<"$api_spec")" == "$API_SERVICE" &&
 else
   fail "$API_NAME is not in the persistent service group $API_SERVICE: $api_spec"
 fi
-for name in "$POSTGRES_NAME" "$OPENFGA_NAME" "$API_NAME"; do
+for name in "${private[@]}" "$API_NAME"; do
   policy="$(unikraft instances get "$name" -f restart.policy -o json | jq -r '.[0].restart.policy // ""')"
   [[ "$policy" == always ]] && echo "$name: restart policy always" || fail "$name restart policy is '$policy', not always"
 done
@@ -81,7 +86,7 @@ done
 echo "--- exposure of the private instances"
 # A private instance has no service group: the CLI returns an empty object
 # ({"uuid":"", ...}), so test the uuid rather than null.
-for name in "$OPENFGA_NAME" "$POSTGRES_NAME"; do
+for name in "${private[@]}"; do
   svc="$(unikraft instances get "$name" -f service -o json | jq -c '.[0].service')"
   if [[ "$(jq -r '.uuid // ""' <<<"$svc")" == "" ]]; then
     echo "$name: no service (private)"

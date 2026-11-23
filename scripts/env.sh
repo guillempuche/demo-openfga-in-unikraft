@@ -45,9 +45,15 @@ fi
 UNIKRAFT_ORG="${UNIKRAFT_ORG:-$UNIKRAFT_PROFILE}"
 UNIKRAFT_METRO="${UNIKRAFT_METRO:-fra}"
 
-# Every cloud resource this demo creates is prefixed with demo-fga-; the
-# cleanup script refuses to touch anything else.
-PREFIX="demo-fga-"
+# Every cloud resource this demo creates is prefixed with RESOURCE_PREFIX
+# (demo-fga- unless set); the cleanup script refuses to touch anything else.
+# A second deployment on the same account (an experiment next to the demo)
+# sets its own prefix, so neither one's scripts touch the other's resources.
+PREFIX="${RESOURCE_PREFIX:-demo-fga-}"
+if [[ ! "$PREFIX" =~ ^[a-z][a-z0-9-]*-$ ]]; then
+  echo "error: RESOURCE_PREFIX must be lowercase letters, digits and hyphens, ending in a hyphen (got '$PREFIX')" >&2
+  exit 1
+fi
 POSTGRES_NAME="${PREFIX}postgres"
 POSTGRES_VOLUME="${PREFIX}pgdata"
 MIGRATE_NAME="${PREFIX}migrate"
@@ -58,7 +64,17 @@ API_SERVICE="${PREFIX}api"
 POSTGRES_IMAGE="$UNIKRAFT_ORG/${POSTGRES_NAME}:latest"
 OPENFGA_IMAGE="$UNIKRAFT_ORG/${OPENFGA_NAME}:latest"
 API_IMAGE="$UNIKRAFT_ORG/${API_NAME}:latest"
-FGA_STORE_NAME="${FGA_STORE_NAME:-demo-fga}"
+FGA_STORE_NAME="${FGA_STORE_NAME:-${PREFIX%-}}"
+# The API's scale-to-zero: on for the demo, which idles most of the time; off
+# where a measurement or a deployment needs it always running.
+API_SCALE_TO_ZERO="${API_SCALE_TO_ZERO:-on}"
+case "$API_SCALE_TO_ZERO" in
+  on | off) ;;
+  *) echo "error: API_SCALE_TO_ZERO must be on or off, not '$API_SCALE_TO_ZERO'" >&2; exit 1 ;;
+esac
+# With OPENFGA_DATASTORE_URI set, OpenFGA's data lives in an external
+# PostgreSQL and there is no postgres instance to deploy, check or delete.
+external_datastore() { [[ -n "${OPENFGA_DATASTORE_URI:-}" ]]; }
 # ListObjects/ListUsers max results on the deployment (default 1000). The
 # integration suite needs at least 61 and tests the truncation at this value.
 FGA_LIST_MAX_RESULTS="${FGA_LIST_MAX_RESULTS:-100}"

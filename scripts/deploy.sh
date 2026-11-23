@@ -41,7 +41,7 @@ trap 'rm -f "$tmp"' EXIT
 # Check the certificate files this deploy hands over before creating anything.
 if tls_on; then
   certificates=()
-  if [[ "$target" == postgres || "$target" == backend || "$target" == all ]]; then
+  if [[ "$target" == postgres || "$target" == backend || "$target" == all ]] && ! external_datastore; then
     certificates+=("$POSTGRES_TLS_CERT_FILE" "$POSTGRES_TLS_KEY_FILE" "$POSTGRES_NAME.internal")
   fi
   if [[ "$target" == openfga || "$target" == backend || "$target" == all ]]; then
@@ -101,7 +101,11 @@ wait_running() {
   show_instance "$1"
 }
 
-if [[ "$target" == postgres || "$target" == backend || "$target" == all ]]; then
+if [[ "$target" == postgres ]] && external_datastore; then
+  echo "error: OPENFGA_DATASTORE_URI is set, so OpenFGA uses an external PostgreSQL; there is no postgres instance to deploy" >&2
+  exit 1
+fi
+if [[ "$target" == postgres || "$target" == backend || "$target" == all ]] && ! external_datastore; then
   require POSTGRES_PASSWORD
   if ! unikraft volumes get "$POSTGRES_VOLUME" -f name -o json >/dev/null 2>&1; then
     unikraft volumes create --metro "$UNIKRAFT_METRO" --name "$POSTGRES_VOLUME" --size 512MiB -o quiet
@@ -205,7 +209,7 @@ runtime:
     # Measured: the first uncached check after ~90 s of quiet takes ~80 ms
     # (Postgres wakes, OpenFGA reconnects) instead of 7-8 ms.
     OPENFGA_DATASTORE_MAX_OPEN_CONNS: "20"
-    OPENFGA_DATASTORE_CONN_MAX_IDLE_TIME: 30s
+    OPENFGA_DATASTORE_CONN_MAX_IDLE_TIME: $(yq_str "${OPENFGA_DATASTORE_CONN_MAX_IDLE_TIME:-30s}")
     OPENFGA_DATASTORE_METRICS_ENABLED: "true"
     OPENFGA_METRICS_ENABLE_RPC_HISTOGRAMS: "true"
     # The public API forwards any caller's query: bound how much one query can
@@ -251,8 +255,8 @@ resources:
 restart:
   policy: always
 scale-to-zero:
-  policy: "on"
-  cooldown-time: 5s
+  policy: "$API_SCALE_TO_ZERO"
+$([[ "$API_SCALE_TO_ZERO" == on ]] && echo '  cooldown-time: 5s')
 # The persistent service group demo-fga-api (created above if missing) owns
 # the public domain, so the URL survives redeploys.
 service:

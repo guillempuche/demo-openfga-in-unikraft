@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Delete the demo instances: ./scripts/cleanup.sh [--volume] [--images] [--service] [--all]
 #   --volume   also delete the postgres volume (drops the OpenFGA data)
-#   --images   also delete the demo-fga-* images
+#   --images   also delete the images
 #   --service  also delete the API's service group (its public URL is gone for good)
 #   --all      all three
-# Only ever touches names starting with demo-fga-.
+# Only ever touches names starting with RESOURCE_PREFIX (demo-fga- by
+# default): the instances above, and any other instance with that prefix
+# (one-off probes and experiments).
 . "$(dirname "$0")/env.sh"
 
 volume=false
@@ -37,6 +39,13 @@ for name in "$API_NAME" "$OPENFGA_NAME" "$MIGRATE_NAME" "$POSTGRES_NAME"; do
     echo "$name: not found"
   fi
 done
+
+# Any other instance with the prefix: one-off probes and experiments.
+while IFS= read -r name; do
+  [[ -z "$name" ]] && continue
+  guard "$name"
+  unikraft instances delete "$name" -o quiet >/dev/null && echo "deleted $name" || fail "could not delete instance $name"
+done < <(unikraft instances list -f name -o json | jq -r --arg p "$PREFIX" '.[].name | select(startswith($p))')
 
 if $service; then
   guard "$API_SERVICE"
